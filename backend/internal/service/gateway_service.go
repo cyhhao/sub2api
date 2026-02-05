@@ -46,8 +46,9 @@ const (
 )
 
 const (
-	claudeMimicDebugInfoKey   = "claude_mimic_debug_info"
-	claudeMimicRequestBodyKey = "claude_mimic_request_body"
+	claudeMimicDebugInfoKey     = "claude_mimic_debug_info"
+	claudeMimicDebugInfoFullKey = "claude_mimic_debug_info_full"
+	claudeMimicRequestBodyKey   = "claude_mimic_request_body"
 )
 
 func (s *GatewayService) debugModelRoutingEnabled() bool {
@@ -121,46 +122,81 @@ func extractSystemPreviewFromBody(body []byte) string {
 	}
 }
 
-func buildClaudeMimicDebugLine(req *http.Request, body []byte, account *Account, tokenType string, mimicClaudeCode bool) string {
+type claudeMimicDebugOptions struct {
+	fullHeaders      bool
+	systemPreviewMax int
+}
+
+func formatClaudeMimicHeaders(req *http.Request, full bool) []string {
+	if req == nil {
+		return nil
+	}
+	if !full {
+		// Only log a minimal fingerprint to avoid leaking user content.
+		interesting := []string{
+			"user-agent",
+			"x-app",
+			"anthropic-dangerous-direct-browser-access",
+			"anthropic-version",
+			"anthropic-beta",
+			"x-stainless-lang",
+			"x-stainless-package-version",
+			"x-stainless-os",
+			"x-stainless-arch",
+			"x-stainless-runtime",
+			"x-stainless-runtime-version",
+			"x-stainless-retry-count",
+			"x-stainless-timeout",
+			"authorization",
+			"x-api-key",
+			"content-type",
+			"accept",
+			"x-stainless-helper-method",
+		}
+
+		h := make([]string, 0, len(interesting))
+		for _, k := range interesting {
+			if v := req.Header.Get(k); v != "" {
+				h = append(h, fmt.Sprintf("%s=%q", k, safeHeaderValueForLog(k, v)))
+			}
+		}
+		return h
+	}
+
+	keys := make([]string, 0, len(req.Header))
+	for k := range req.Header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := make([]string, 0, len(keys)+1)
+	for _, k := range keys {
+		values := req.Header[k]
+		if len(values) == 0 {
+			continue
+		}
+		safeValues := make([]string, 0, len(values))
+		for _, v := range values {
+			safeValues = append(safeValues, safeHeaderValueForLog(k, v))
+		}
+		h = append(h, fmt.Sprintf("%s=%q", strings.ToLower(k), strings.Join(safeValues, ",")))
+	}
+	if req.Host != "" && req.Header.Get("host") == "" {
+		h = append(h, fmt.Sprintf("host=%q", safeHeaderValueForLog("host", req.Host)))
+	}
+	return h
+}
+
+func buildClaudeMimicDebugLineWithOptions(req *http.Request, body []byte, account *Account, tokenType string, mimicClaudeCode bool, opts claudeMimicDebugOptions) string {
 	if req == nil {
 		return ""
-	}
-
-	// Only log a minimal fingerprint to avoid leaking user content.
-	interesting := []string{
-		"user-agent",
-		"x-app",
-		"anthropic-dangerous-direct-browser-access",
-		"anthropic-version",
-		"anthropic-beta",
-		"x-stainless-lang",
-		"x-stainless-package-version",
-		"x-stainless-os",
-		"x-stainless-arch",
-		"x-stainless-runtime",
-		"x-stainless-runtime-version",
-		"x-stainless-retry-count",
-		"x-stainless-timeout",
-		"authorization",
-		"x-api-key",
-		"content-type",
-		"accept",
-		"x-stainless-helper-method",
-	}
-
-	h := make([]string, 0, len(interesting))
-	for _, k := range interesting {
-		if v := req.Header.Get(k); v != "" {
-			h = append(h, fmt.Sprintf("%s=%q", k, safeHeaderValueForLog(k, v)))
-		}
 	}
 
 	metaUserID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String())
 	sysPreview := strings.TrimSpace(extractSystemPreviewFromBody(body))
 
-	// Truncate preview to keep logs sane.
-	if len(sysPreview) > 300 {
-		sysPreview = sysPreview[:300] + "..."
+	if opts.systemPreviewMax > 0 && len(sysPreview) > opts.systemPreviewMax {
+		sysPreview = sysPreview[:opts.systemPreviewMax] + "..."
 	}
 	sysPreview = strings.ReplaceAll(sysPreview, "\n", "\\n")
 	sysPreview = strings.ReplaceAll(sysPreview, "\r", "\\r")
@@ -181,8 +217,22 @@ func buildClaudeMimicDebugLine(req *http.Request, body []byte, account *Account,
 		mimicClaudeCode,
 		metaUserID,
 		sysPreview,
-		strings.Join(h, " "),
+		strings.Join(formatClaudeMimicHeaders(req, opts.fullHeaders), " "),
 	)
+}
+
+func buildClaudeMimicDebugLine(req *http.Request, body []byte, account *Account, tokenType string, mimicClaudeCode bool) string {
+	return buildClaudeMimicDebugLineWithOptions(req, body, account, tokenType, mimicClaudeCode, claudeMimicDebugOptions{
+		fullHeaders:      false,
+		systemPreviewMax: 300,
+	})
+}
+
+func buildClaudeMimicDebugLineFull(req *http.Request, body []byte, account *Account, tokenType string, mimicClaudeCode bool) string {
+	return buildClaudeMimicDebugLineWithOptions(req, body, account, tokenType, mimicClaudeCode, claudeMimicDebugOptions{
+		fullHeaders:      true,
+		systemPreviewMax: 0,
+	})
 }
 
 func logClaudeMimicDebug(req *http.Request, body []byte, account *Account, tokenType string, mimicClaudeCode bool) {
@@ -3511,6 +3561,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
 		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
 			c.Set(claudeMimicRequestBodyKey, body)
+			c.Set(claudeMimicDebugInfoFullKey, buildClaudeMimicDebugLineFull(req, body, account, tokenType, mimicClaudeCode))
 		}
 	}
 	if s.debugClaudeMimicEnabled() {
@@ -3525,6 +3576,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			tokenType,
 			formatBodyForLog(body, s.cfg.Gateway.LogHiRequestBodyMaxBytes),
 		)
+		if line := buildClaudeMimicDebugLineFull(req, body, account, tokenType, mimicClaudeCode); strings.TrimSpace(line) != "" {
+			log.Printf("[HiRequestDebug] %s", line)
+		}
 	}
 
 	return req, nil
@@ -3866,6 +3920,15 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			}
 		}
 		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			if v, ok := c.Get(claudeMimicDebugInfoFullKey); ok {
+				if line, ok := v.(string); ok && strings.TrimSpace(line) != "" {
+					log.Printf("[ClaudeMimicDebugOnErrorFull] status=%d request_id=%s %s",
+						resp.StatusCode,
+						resp.Header.Get("x-request-id"),
+						line,
+					)
+				}
+			}
 			if v, ok := c.Get(claudeMimicRequestBodyKey); ok {
 				if raw, ok := v.([]byte); ok && len(raw) > 0 {
 					log.Printf("[ClaudeMimicDebugOnErrorBody] status=%d request_id=%s body=%s",
@@ -4019,6 +4082,15 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			}
 		}
 		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			if v, ok := c.Get(claudeMimicDebugInfoFullKey); ok {
+				if line, ok := v.(string); ok && strings.TrimSpace(line) != "" {
+					log.Printf("[ClaudeMimicDebugOnErrorFull] status=%d request_id=%s %s",
+						resp.StatusCode,
+						resp.Header.Get("x-request-id"),
+						line,
+					)
+				}
+			}
 			if v, ok := c.Get(claudeMimicRequestBodyKey); ok {
 				if raw, ok := v.([]byte); ok && len(raw) > 0 {
 					log.Printf("[ClaudeMimicDebugOnErrorBody] status=%d request_id=%s body=%s",
@@ -5271,6 +5343,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
 		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
 			c.Set(claudeMimicRequestBodyKey, body)
+			c.Set(claudeMimicDebugInfoFullKey, buildClaudeMimicDebugLineFull(req, body, account, tokenType, mimicClaudeCode))
 		}
 	}
 	if s.debugClaudeMimicEnabled() {
