@@ -47,7 +47,8 @@ const (
 )
 
 const (
-	claudeMimicDebugInfoKey = "claude_mimic_debug_info"
+	claudeMimicDebugInfoKey   = "claude_mimic_debug_info"
+	claudeMimicRequestBodyKey = "claude_mimic_request_body"
 )
 
 func (s *GatewayService) debugModelRoutingEnabled() bool {
@@ -3551,6 +3552,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// We only print it when needed (or when the explicit debug flag is enabled).
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
+		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			c.Set(claudeMimicRequestBodyKey, body)
+		}
 	}
 	if s.debugClaudeMimicEnabled() {
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
@@ -3726,6 +3730,16 @@ func truncateForLog(b []byte, maxBytes int) string {
 	return s
 }
 
+func formatBodyForLog(b []byte, maxBytes int) string {
+	if maxBytes > 0 && len(b) > maxBytes {
+		b = b[:maxBytes]
+	}
+	s := string(b)
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return s
+}
+
 // isThinkingBlockSignatureError 检测是否是thinking block相关错误
 // 这类错误可以通过过滤thinking blocks并重试来解决
 func (s *GatewayService) isThinkingBlockSignatureError(respBody []byte) bool {
@@ -3832,6 +3846,17 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 					resp.Header.Get("x-request-id"),
 					line,
 				)
+			}
+		}
+		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			if v, ok := c.Get(claudeMimicRequestBodyKey); ok {
+				if raw, ok := v.([]byte); ok && len(raw) > 0 {
+					log.Printf("[ClaudeMimicDebugOnErrorBody] status=%d request_id=%s body=%s",
+						resp.StatusCode,
+						resp.Header.Get("x-request-id"),
+						formatBodyForLog(raw, s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBodyMaxBytes),
+					)
+				}
 			}
 		}
 	}
@@ -3974,6 +3999,17 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 					resp.Header.Get("x-request-id"),
 					line,
 				)
+			}
+		}
+		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			if v, ok := c.Get(claudeMimicRequestBodyKey); ok {
+				if raw, ok := v.([]byte); ok && len(raw) > 0 {
+					log.Printf("[ClaudeMimicDebugOnErrorBody] status=%d request_id=%s body=%s",
+						resp.StatusCode,
+						resp.Header.Get("x-request-id"),
+						formatBodyForLog(raw, s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBodyMaxBytes),
+					)
+				}
 			}
 		}
 	}
@@ -5214,6 +5250,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
+		if s.cfg != nil && s.cfg.Gateway.LogClaudeCodeScopeErrorRequestBody {
+			c.Set(claudeMimicRequestBodyKey, body)
+		}
 	}
 	if s.debugClaudeMimicEnabled() {
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)

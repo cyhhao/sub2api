@@ -163,6 +163,12 @@ gateway:
   # Max bytes to log from upstream error body
   # 记录上游错误响应体的最大字节数
   log_upstream_error_body_max_bytes: 2048
+  # Log request body when Claude Code credential scope error happens (may contain sensitive data)
+  # Claude Code 凭证范围错误时记录请求体（可能包含敏感数据）
+  log_claude_code_scope_error_request_body: false
+  # Max bytes to log from request body, 0=no limit
+  # 请求体记录最大字节数，0 表示不限制
+  log_claude_code_scope_error_request_body_max_bytes: 0
   # Auto inject anthropic-beta header for API-key accounts when needed (default: off)
   # 需要时自动为 API-key 账户注入 anthropic-beta 头（默认：关闭）
   inject_beta_for_apikey: false
