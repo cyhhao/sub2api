@@ -3488,12 +3488,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			applyClaudeCodeMimicHeaders(req, reqStream)
 
 			incomingBeta := req.Header.Get("anthropic-beta")
-			// Match real Claude CLI traffic (per mitmproxy reports):
-			// messages requests typically use only oauth + interleaved-thinking.
-			// Also drop claude-code beta if a downstream client added it.
-			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking}
-			drop := map[string]struct{}{claude.BetaClaudeCode: {}}
-			req.Header.Set("anthropic-beta", mergeAnthropicBetaDropping(requiredBetas, incomingBeta, drop))
+			// Ensure Claude Code beta is included for Claude Code scoped credentials.
+			requiredBetas := []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking}
+			req.Header.Set("anthropic-beta", mergeAnthropicBeta(requiredBetas, incomingBeta))
 		} else {
 			// Claude Code 客户端：尽量透传原始 header，仅补齐 oauth beta
 			clientBetaHeader := req.Header.Get("anthropic-beta")
@@ -3630,25 +3627,6 @@ func mergeAnthropicBeta(required []string, incoming string) string {
 	}
 	for _, p := range strings.Split(incoming, ",") {
 		add(p)
-	}
-	return strings.Join(out, ",")
-}
-
-func mergeAnthropicBetaDropping(required []string, incoming string, drop map[string]struct{}) string {
-	merged := mergeAnthropicBeta(required, incoming)
-	if merged == "" || len(drop) == 0 {
-		return merged
-	}
-	out := make([]string, 0, 8)
-	for _, p := range strings.Split(merged, ",") {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, ok := drop[p]; ok {
-			continue
-		}
-		out = append(out, p)
 	}
 	return strings.Join(out, ",")
 }
