@@ -169,6 +169,12 @@ gateway:
   # Max bytes to log from request body, 0=no limit
   # 请求体记录最大字节数，0 表示不限制
   log_claude_code_scope_error_request_body_max_bytes: 0
+  # Log full request body when user content text is exactly "hi"
+  # 当用户 content text 精确等于 "hi" 时记录完整请求体
+  log_hi_request_body: false
+  # Max bytes to log from hi request body, 0=no limit
+  # hi 请求体记录最大字节数，0 表示不限制
+  log_hi_request_body_max_bytes: 0
   # Auto inject anthropic-beta header for API-key accounts when needed (default: off)
   # 需要时自动为 API-key 账户注入 anthropic-beta 头（默认：关闭）
   inject_beta_for_apikey: false

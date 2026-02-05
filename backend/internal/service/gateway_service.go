@@ -3516,6 +3516,15 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if s.debugClaudeMimicEnabled() {
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
+	if s.cfg != nil && s.cfg.Gateway.LogHiRequestBody && shouldLogHiRequestBody(body) {
+		log.Printf("[HiRequestBody] url=%s account=%d(%s) tokenType=%s body=%s",
+			req.URL.String(),
+			account.ID,
+			account.Name,
+			tokenType,
+			formatBodyForLog(body, s.cfg.Gateway.LogHiRequestBodyMaxBytes),
+		)
+	}
 
 	return req, nil
 }
@@ -3676,6 +3685,33 @@ func formatBodyForLog(b []byte, maxBytes int) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	return s
+}
+
+func shouldLogHiRequestBody(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	msgs := gjson.GetBytes(body, "messages")
+	if !msgs.IsArray() {
+		return false
+	}
+	for _, m := range msgs.Array() {
+		content := m.Get("content")
+		switch {
+		case content.IsArray():
+			for _, c := range content.Array() {
+				if strings.EqualFold(strings.TrimSpace(c.Get("type").String()), "text") &&
+					strings.EqualFold(strings.TrimSpace(c.Get("text").String()), "hi") {
+					return true
+				}
+			}
+		case content.Type == gjson.String:
+			if strings.EqualFold(strings.TrimSpace(content.String()), "hi") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isThinkingBlockSignatureError 检测是否是thinking block相关错误
