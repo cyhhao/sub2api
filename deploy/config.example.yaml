@@ -177,6 +177,12 @@ gateway:
   # Max bytes to log from hi request body, 0=no limit
   # hi 请求体记录最大字节数，0 表示不限制
   log_hi_request_body_max_bytes: 0
+  # Only log when the request is exactly a single user text "hi"
+  # 仅当请求是单条 user 文本 "hi" 时才记录
+  log_hi_request_body_strict: false
+  # Only log when model matches (prefix supported, e.g. claude-opus-4-5). Empty = any
+  # 仅当模型匹配时才记录（支持前缀，如 claude-opus-4-5），空表示不限制
+  log_hi_request_body_model: ""
   # Auto inject anthropic-beta header for API-key accounts when needed (default: off)
   # 需要时自动为 API-key 账户注入 anthropic-beta 头（默认：关闭）
   inject_beta_for_apikey: false

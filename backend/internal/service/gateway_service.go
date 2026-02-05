@@ -3516,7 +3516,8 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if s.debugClaudeMimicEnabled() {
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
-	if s.cfg != nil && s.cfg.Gateway.LogHiRequestBody && shouldLogHiRequestBody(body) {
+	if s.cfg != nil && s.cfg.Gateway.LogHiRequestBody &&
+		shouldLogHiRequestBody(body, s.cfg.Gateway.LogHiRequestBodyStrict, s.cfg.Gateway.LogHiRequestBodyModel) {
 		log.Printf("[HiRequestBody] url=%s account=%d(%s) tokenType=%s body=%s",
 			req.URL.String(),
 			account.ID,
@@ -3687,12 +3688,54 @@ func formatBodyForLog(b []byte, maxBytes int) string {
 	return s
 }
 
-func shouldLogHiRequestBody(body []byte) bool {
+func shouldLogHiRequestBody(body []byte, strict bool, model string) bool {
 	if len(body) == 0 {
 		return false
 	}
+	if model != "" {
+		got := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+		if got == "" {
+			return false
+		}
+		gotLower := strings.ToLower(got)
+		wantLower := strings.ToLower(strings.TrimSpace(model))
+		if wantLower == "" {
+			return false
+		}
+		if !strings.EqualFold(got, model) && !strings.HasPrefix(gotLower, wantLower) {
+			return false
+		}
+	}
 	msgs := gjson.GetBytes(body, "messages")
 	if !msgs.IsArray() {
+		return false
+	}
+	if strict {
+		arr := msgs.Array()
+		if len(arr) != 1 {
+			return false
+		}
+		msg := arr[0]
+		if role := strings.TrimSpace(strings.ToLower(msg.Get("role").String())); role != "" && role != "user" {
+			return false
+		}
+		content := msg.Get("content")
+		switch {
+		case content.IsArray():
+			items := content.Array()
+			if len(items) != 1 {
+				return false
+			}
+			c := items[0]
+			if strings.EqualFold(strings.TrimSpace(c.Get("type").String()), "text") &&
+				strings.EqualFold(strings.TrimSpace(c.Get("text").String()), "hi") {
+				return true
+			}
+		case content.Type == gjson.String:
+			if strings.EqualFold(strings.TrimSpace(content.String()), "hi") {
+				return true
+			}
+		}
 		return false
 	}
 	for _, m := range msgs.Array() {

@@ -251,11 +251,13 @@ type GatewayConfig struct {
 	// 是否记录上游错误响应体摘要（避免输出请求内容）
 	LogUpstreamErrorBody bool `mapstructure:"log_upstream_error_body"`
 	// 上游错误响应体记录最大字节数（超过会截断）
-	LogUpstreamErrorBodyMaxBytes               int  `mapstructure:"log_upstream_error_body_max_bytes"`
-	LogClaudeCodeScopeErrorRequestBody         bool `mapstructure:"log_claude_code_scope_error_request_body"`
-	LogClaudeCodeScopeErrorRequestBodyMaxBytes int  `mapstructure:"log_claude_code_scope_error_request_body_max_bytes"`
-	LogHiRequestBody                           bool `mapstructure:"log_hi_request_body"`
-	LogHiRequestBodyMaxBytes                   int  `mapstructure:"log_hi_request_body_max_bytes"`
+	LogUpstreamErrorBodyMaxBytes               int    `mapstructure:"log_upstream_error_body_max_bytes"`
+	LogClaudeCodeScopeErrorRequestBody         bool   `mapstructure:"log_claude_code_scope_error_request_body"`
+	LogClaudeCodeScopeErrorRequestBodyMaxBytes int    `mapstructure:"log_claude_code_scope_error_request_body_max_bytes"`
+	LogHiRequestBody                           bool   `mapstructure:"log_hi_request_body"`
+	LogHiRequestBodyMaxBytes                   int    `mapstructure:"log_hi_request_body_max_bytes"`
+	LogHiRequestBodyStrict                     bool   `mapstructure:"log_hi_request_body_strict"`
+	LogHiRequestBodyModel                      string `mapstructure:"log_hi_request_body_model"`
 
 	// API-key 账号在客户端未提供 anthropic-beta 时，是否按需自动补齐（默认关闭以保持兼容）
 	InjectBetaForAPIKey bool `mapstructure:"inject_beta_for_apikey"`
@@ -856,6 +858,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_claude_code_scope_error_request_body_max_bytes", 0)
 	viper.SetDefault("gateway.log_hi_request_body", false)
 	viper.SetDefault("gateway.log_hi_request_body_max_bytes", 0)
+	viper.SetDefault("gateway.log_hi_request_body_strict", false)
+	viper.SetDefault("gateway.log_hi_request_body_model", "")
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
