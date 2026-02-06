@@ -421,7 +421,8 @@ type ForwardResult struct {
 
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
-	StatusCode int
+	StatusCode   int
+	ResponseBody []byte // 上游响应体，用于错误透传规则匹配
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -435,6 +436,7 @@ type GatewayService struct {
 	usageLogRepo        UsageLogRepository
 	userRepo            UserRepository
 	userSubRepo         UserSubscriptionRepository
+	userGroupRateRepo   UserGroupRateRepository
 	cache               GatewayCache
 	cfg                 *config.Config
 	schedulerSnapshot   *SchedulerSnapshotService
@@ -456,6 +458,7 @@ func NewGatewayService(
 	usageLogRepo UsageLogRepository,
 	userRepo UserRepository,
 	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
 	cache GatewayCache,
 	cfg *config.Config,
 	schedulerSnapshot *SchedulerSnapshotService,
@@ -475,6 +478,7 @@ func NewGatewayService(
 		usageLogRepo:        usageLogRepo,
 		userRepo:            userRepo,
 		userSubRepo:         userSubRepo,
+		userGroupRateRepo:   userGroupRateRepo,
 		cache:               cache,
 		cfg:                 cfg,
 		schedulerSnapshot:   schedulerSnapshot,
@@ -3332,7 +3336,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
@@ -3362,10 +3366,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 	}
-
-	// 处理错误响应（不可重试的错误）
 	if resp.StatusCode >= 400 {
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）
 		if resp.StatusCode == 400 && s.cfg != nil && s.cfg.Gateway.FailoverOn400 {
@@ -3409,7 +3411,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					log.Printf("Account %d: 400 error, attempting failover", account.ID)
 				}
 				s.handleFailoverSideEffects(ctx, resp, account)
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account)
@@ -3880,6 +3882,12 @@ func (s *GatewayService) shouldFailoverOn400(respBody []byte) bool {
 	return false
 }
 
+// ExtractUpstreamErrorMessage 从上游响应体中提取错误消息
+// 支持 Claude 风格的错误格式：{"type":"error","error":{"type":"...","message":"..."}}
+func ExtractUpstreamErrorMessage(body []byte) string {
+	return extractUpstreamErrorMessage(body)
+}
+
 func extractUpstreamErrorMessage(body []byte) string {
 	// Claude 风格：{"type":"error","error":{"type":"...","message":"..."}}
 	if m := gjson.GetBytes(body, "error.message").String(); strings.TrimSpace(m) != "" {
@@ -3967,7 +3975,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	}
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode}
+		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
 	}
 
 	// 记录上游错误响应体摘要便于排障（可选：由配置控制；不回显到客户端）
@@ -4774,10 +4782,17 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	account := input.Account
 	subscription := input.Subscription
 
-	// 获取费率倍数
+	// 获取费率倍数（优先级：用户专属 > 分组默认 > 系统默认）
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
 		multiplier = apiKey.Group.RateMultiplier
+
+		// 检查用户专属倍率
+		if s.userGroupRateRepo != nil {
+			if userRate, err := s.userGroupRateRepo.GetByUserAndGroup(ctx, user.ID, *apiKey.GroupID); err == nil && userRate != nil {
+				multiplier = *userRate
+			}
+		}
 	}
 
 	var cost *CostBreakdown
@@ -4938,10 +4953,17 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 	account := input.Account
 	subscription := input.Subscription
 
-	// 获取费率倍数
+	// 获取费率倍数（优先级：用户专属 > 分组默认 > 系统默认）
 	multiplier := s.cfg.Default.RateMultiplier
 	if apiKey.GroupID != nil && apiKey.Group != nil {
 		multiplier = apiKey.Group.RateMultiplier
+
+		// 检查用户专属倍率
+		if s.userGroupRateRepo != nil {
+			if userRate, err := s.userGroupRateRepo.GetByUserAndGroup(ctx, user.ID, *apiKey.GroupID); err == nil && userRate != nil {
+				multiplier = *userRate
+			}
+		}
 	}
 
 	var cost *CostBreakdown
