@@ -326,6 +326,12 @@ var (
 	}
 )
 
+// systemBlockFilterPrefixes 需要从 system 中过滤的文本前缀列表
+// OAuth/SetupToken 账号转发时，匹配这些前缀的 system 元素会被移除
+var systemBlockFilterPrefixes = []string{
+	"x-anthropic-billing-header",
+}
+
 // ErrClaudeCodeOnly 表示分组仅允许 Claude Code 客户端访问
 var ErrClaudeCodeOnly = errors.New("this group only allows Claude Code clients")
 
@@ -426,6 +432,8 @@ type ClaudeUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
 }
 
 // ForwardResult 转发结果
@@ -445,13 +453,29 @@ type ForwardResult struct {
 
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
-	StatusCode        int
-	ResponseBody      []byte // 上游响应体，用于错误透传规则匹配
-	ForceCacheBilling bool   // Antigravity 粘性会话切换时设为 true
+	StatusCode             int
+	ResponseBody           []byte // 上游响应体，用于错误透传规则匹配
+	ForceCacheBilling      bool   // Antigravity 粘性会话切换时设为 true
+	RetryableOnSameAccount bool   // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
 }
 
 func (e *UpstreamFailoverError) Error() string {
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
+}
+
+// TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
+// 由 handler 层在同账号重试全部用尽、切换账号时调用。
+func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
+	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
+		return
+	}
+	// 根据状态码选择封禁策略
+	switch failoverErr.StatusCode {
+	case http.StatusBadRequest:
+		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
+	case http.StatusBadGateway:
+		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+	}
 }
 
 // GatewayService handles API gateway operations
@@ -1988,6 +2012,17 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	return accounts, useMixed, nil
 }
 
+// IsSingleAntigravityAccountGroup 检查指定分组是否只有一个 antigravity 平台的可调度账号。
+// 用于 Handler 层在首次请求时提前设置 SingleAccountRetry context，
+// 避免单账号分组收到 503 时错误地设置模型限流标记导致后续请求连续快速失败。
+func (s *GatewayService) IsSingleAntigravityAccountGroup(ctx context.Context, groupID *int64) bool {
+	accounts, _, err := s.listSchedulableAccounts(ctx, groupID, PlatformAntigravity, true)
+	if err != nil {
+		return false
+	}
+	return len(accounts) == 1
+}
+
 func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform string, useMixed bool) bool {
 	if account == nil {
 		return false
@@ -2978,6 +3013,60 @@ func hasClaudeCodePrefix(text string) bool {
 	return false
 }
 
+// matchesFilterPrefix 检查文本是否匹配任一过滤前缀
+func matchesFilterPrefix(text string) bool {
+	for _, prefix := range systemBlockFilterPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterSystemBlocksByPrefix 从 body 的 system 中移除文本匹配 systemBlockFilterPrefixes 前缀的元素
+// 直接从 body 解析 system，不依赖外部传入的 parsed.System（因为前置步骤可能已修改 body 中的 system）
+func filterSystemBlocksByPrefix(body []byte) []byte {
+	sys := gjson.GetBytes(body, "system")
+	if !sys.Exists() {
+		return body
+	}
+
+	switch {
+	case sys.Type == gjson.String:
+		if matchesFilterPrefix(sys.Str) {
+			result, err := sjson.DeleteBytes(body, "system")
+			if err != nil {
+				return body
+			}
+			return result
+		}
+	case sys.IsArray():
+		var parsed []any
+		if err := json.Unmarshal([]byte(sys.Raw), &parsed); err != nil {
+			return body
+		}
+		filtered := make([]any, 0, len(parsed))
+		changed := false
+		for _, item := range parsed {
+			if m, ok := item.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok && matchesFilterPrefix(text) {
+					changed = true
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		if changed {
+			result, err := sjson.SetBytes(body, "system", filtered)
+			if err != nil {
+				return body
+			}
+			return result
+		}
+	}
+	return body
+}
+
 // injectClaudeCodePrompt 在 system 开头注入 Claude Code 提示词
 // 处理 null、字符串、数组三种格式
 func injectClaudeCodePrompt(body []byte, system any) []byte {
@@ -3256,6 +3345,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		body, reqModel, toolNameMap = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+	}
+
+	// OAuth/SetupToken 账号：移除黑名单前缀匹配的 system 元素（如客户端注入的计费元数据）
+	// 放在 inject/normalize 之后，确保不会被覆盖
+	if account.IsOAuth() {
+		body = filterSystemBlocksByPrefix(body)
 	}
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
@@ -3858,7 +3953,8 @@ func requestNeedsBetaFeatures(body []byte) bool {
 	if tools.Exists() && tools.IsArray() && len(tools.Array()) > 0 {
 		return true
 	}
-	if strings.EqualFold(gjson.GetBytes(body, "thinking.type").String(), "enabled") {
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	if strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive") {
 		return true
 	}
 	return false
@@ -4932,6 +5028,14 @@ func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
 		usage.InputTokens = msgStart.Message.Usage.InputTokens
 		usage.CacheCreationInputTokens = msgStart.Message.Usage.CacheCreationInputTokens
 		usage.CacheReadInputTokens = msgStart.Message.Usage.CacheReadInputTokens
+
+		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
+		cc5m := gjson.Get(data, "message.usage.cache_creation.ephemeral_5m_input_tokens")
+		cc1h := gjson.Get(data, "message.usage.cache_creation.ephemeral_1h_input_tokens")
+		if cc5m.Exists() || cc1h.Exists() {
+			usage.CacheCreation5mTokens = int(cc5m.Int())
+			usage.CacheCreation1hTokens = int(cc1h.Int())
+		}
 	}
 
 	// 解析message_delta获取tokens（兼容GLM等把所有usage放在delta中的API）
@@ -4960,6 +5064,14 @@ func (s *GatewayService) parseSSEUsage(data string, usage *ClaudeUsage) {
 		if msgDelta.Usage.CacheReadInputTokens > 0 {
 			usage.CacheReadInputTokens = msgDelta.Usage.CacheReadInputTokens
 		}
+
+		// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
+		cc5m := gjson.Get(data, "usage.cache_creation.ephemeral_5m_input_tokens")
+		cc1h := gjson.Get(data, "usage.cache_creation.ephemeral_1h_input_tokens")
+		if cc5m.Exists() || cc1h.Exists() {
+			usage.CacheCreation5mTokens = int(cc5m.Int())
+			usage.CacheCreation1hTokens = int(cc1h.Int())
+		}
 	}
 }
 
@@ -4978,6 +5090,14 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	// 解析嵌套的 cache_creation 对象中的 5m/1h 明细
+	cc5m := gjson.GetBytes(body, "usage.cache_creation.ephemeral_5m_input_tokens")
+	cc1h := gjson.GetBytes(body, "usage.cache_creation.ephemeral_1h_input_tokens")
+	if cc5m.Exists() || cc1h.Exists() {
+		response.Usage.CacheCreation5mTokens = int(cc5m.Int())
+		response.Usage.CacheCreation1hTokens = int(cc1h.Int())
 	}
 
 	// 兼容 Kimi cached_tokens → cache_read_input_tokens
@@ -5122,10 +5242,12 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 	} else {
 		// Token 计费
 		tokens := UsageTokens{
-			InputTokens:         result.Usage.InputTokens,
-			OutputTokens:        result.Usage.OutputTokens,
-			CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-			CacheReadTokens:     result.Usage.CacheReadInputTokens,
+			InputTokens:           result.Usage.InputTokens,
+			OutputTokens:          result.Usage.OutputTokens,
+			CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		}
 		var err error
 		cost, err = s.billingService.CalculateCost(result.Model, tokens, multiplier)
@@ -5159,6 +5281,8 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		OutputTokens:          result.Usage.OutputTokens,
 		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		InputCost:             cost.InputCost,
 		OutputCost:            cost.OutputCost,
 		CacheCreationCost:     cost.CacheCreationCost,
@@ -5303,10 +5427,12 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 	} else {
 		// Token 计费（使用长上下文计费方法）
 		tokens := UsageTokens{
-			InputTokens:         result.Usage.InputTokens,
-			OutputTokens:        result.Usage.OutputTokens,
-			CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-			CacheReadTokens:     result.Usage.CacheReadInputTokens,
+			InputTokens:           result.Usage.InputTokens,
+			OutputTokens:          result.Usage.OutputTokens,
+			CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       result.Usage.CacheReadInputTokens,
+			CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+			CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		}
 		var err error
 		cost, err = s.billingService.CalculateCostWithLongContext(result.Model, tokens, multiplier, input.LongContextThreshold, input.LongContextMultiplier)
@@ -5340,6 +5466,8 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		OutputTokens:          result.Usage.OutputTokens,
 		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
 		InputCost:             cost.InputCost,
 		OutputCost:            cost.OutputCost,
 		CacheCreationCost:     cost.CacheCreationCost,
