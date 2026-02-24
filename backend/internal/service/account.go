@@ -696,6 +696,51 @@ func (a *Account) IsMixedSchedulingEnabled() bool {
 	return false
 }
 
+// IsOpenAIPassthroughEnabled 返回 OpenAI 账号是否启用“自动透传（仅替换认证）”。
+//
+// 新字段：accounts.extra.openai_passthrough。
+// 兼容字段：accounts.extra.openai_oauth_passthrough（历史 OAuth 开关）。
+// 字段缺失或类型不正确时，按 false（关闭）处理。
+func (a *Account) IsOpenAIPassthroughEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	if enabled, ok := a.Extra["openai_passthrough"].(bool); ok {
+		return enabled
+	}
+	if enabled, ok := a.Extra["openai_oauth_passthrough"].(bool); ok {
+		return enabled
+	}
+	return false
+}
+
+// IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。
+func (a *Account) IsOpenAIOAuthPassthroughEnabled() bool {
+	return a != nil && a.IsOpenAIOAuth() && a.IsOpenAIPassthroughEnabled()
+}
+
+// IsAnthropicAPIKeyPassthroughEnabled 返回 Anthropic API Key 账号是否启用“自动透传（仅替换认证）”。
+// 字段：accounts.extra.anthropic_passthrough。
+// 字段缺失或类型不正确时，按 false（关闭）处理。
+func (a *Account) IsAnthropicAPIKeyPassthroughEnabled() bool {
+	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeAPIKey || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["anthropic_passthrough"].(bool)
+	return ok && enabled
+}
+
+// IsCodexCLIOnlyEnabled 返回 OpenAI OAuth 账号是否启用“仅允许 Codex 官方客户端”。
+// 字段：accounts.extra.codex_cli_only。
+// 字段缺失或类型不正确时，按 false（关闭）处理。
+func (a *Account) IsCodexCLIOnlyEnabled() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["codex_cli_only"].(bool)
+	return ok && enabled
+}
+
 // WindowCostSchedulability 窗口费用调度状态
 type WindowCostSchedulability int
 
@@ -750,6 +795,38 @@ func (a *Account) IsSessionIDMaskingEnabled() bool {
 		}
 	}
 	return false
+}
+
+// IsCacheTTLOverrideEnabled 检查是否启用缓存 TTL 强制替换
+// 仅适用于 Anthropic OAuth/SetupToken 类型账号
+// 启用后将所有 cache creation tokens 归入指定的 TTL 类型（5m 或 1h）
+func (a *Account) IsCacheTTLOverrideEnabled() bool {
+	if !a.IsAnthropicOAuthOrSetupToken() {
+		return false
+	}
+	if a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra["cache_ttl_override_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+// GetCacheTTLOverrideTarget 获取缓存 TTL 强制替换的目标类型
+// 返回 "5m" 或 "1h"，默认 "5m"
+func (a *Account) GetCacheTTLOverrideTarget() string {
+	if a.Extra == nil {
+		return "5m"
+	}
+	if v, ok := a.Extra["cache_ttl_override_target"]; ok {
+		if target, ok := v.(string); ok && (target == "5m" || target == "1h") {
+			return target
+		}
+	}
+	return "5m"
 }
 
 // GetWindowCostLimit 获取 5h 窗口费用阈值（美元）

@@ -234,6 +234,7 @@
                       formatCacheTokens(row.cache_creation_tokens)
                     }}</span>
                     <span v-if="row.cache_creation_1h_tokens > 0" class="inline-flex items-center rounded px-1 py-px text-[10px] font-medium leading-tight bg-orange-100 text-orange-600 ring-1 ring-inset ring-orange-200 dark:bg-orange-500/20 dark:text-orange-400 dark:ring-orange-500/30">1h</span>
+                    <span v-if="row.cache_ttl_overridden" :title="t('usage.cacheTtlOverriddenHint')" class="inline-flex items-center rounded px-1 py-px text-[10px] font-medium leading-tight bg-rose-100 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/20 dark:text-rose-400 dark:ring-rose-500/30 cursor-help">R</span>
                   </div>
                 </div>
               </div>
@@ -303,7 +304,7 @@
           </template>
 
           <template #cell-user_agent="{ row }">
-            <span v-if="row.user_agent" class="text-sm text-gray-600 dark:text-gray-400 max-w-[150px] truncate block" :title="row.user_agent">{{ formatUserAgent(row.user_agent) }}</span>
+            <span v-if="row.user_agent" class="text-sm text-gray-600 dark:text-gray-400 block max-w-[320px] whitespace-normal break-all" :title="row.user_agent">{{ formatUserAgent(row.user_agent) }}</span>
             <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
           </template>
 
@@ -374,6 +375,13 @@
                 <span class="text-gray-400">{{ t('admin.usage.cacheCreationTokens') }}</span>
                 <span class="font-medium text-white">{{ tokenTooltipData.cache_creation_tokens.toLocaleString() }}</span>
               </div>
+            </div>
+            <div v-if="tokenTooltipData && tokenTooltipData.cache_ttl_overridden" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400 flex items-center gap-1.5">
+                {{ t('usage.cacheTtlOverriddenLabel') }}
+                <span class="inline-flex items-center rounded px-1 py-px text-[10px] font-medium leading-tight bg-rose-500/20 text-rose-400 ring-1 ring-inset ring-rose-500/30">R-{{ tokenTooltipData.cache_creation_1h_tokens > 0 ? '5m' : '1H' }}</span>
+              </span>
+              <span class="font-medium text-rose-400">{{ tokenTooltipData.cache_creation_1h_tokens > 0 ? t('usage.cacheTtlOverridden1h') : t('usage.cacheTtlOverridden5m') }}</span>
             </div>
             <div v-if="tokenTooltipData && tokenTooltipData.cache_read_tokens > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.cacheReadTokens') }}</span>
@@ -566,16 +574,7 @@ const formatDuration = (ms: number): string => {
 }
 
 const formatUserAgent = (ua: string): string => {
-  // 提取主要客户端标识
-  if (ua.includes('claude-cli')) return ua.match(/claude-cli\/[\d.]+/)?.[0] || 'Claude CLI'
-  if (ua.includes('Cursor')) return 'Cursor'
-  if (ua.includes('VSCode') || ua.includes('vscode')) return 'VS Code'
-  if (ua.includes('Continue')) return 'Continue'
-  if (ua.includes('Cline')) return 'Cline'
-  if (ua.includes('OpenAI')) return 'OpenAI SDK'
-  if (ua.includes('anthropic')) return 'Anthropic SDK'
-  // 截断过长的 UA
-  return ua.length > 30 ? ua.substring(0, 30) + '...' : ua
+  return ua
 }
 
 const formatTokens = (value: number): string => {
