@@ -41,7 +41,8 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/auth/LoginView.vue'),
     meta: {
       requiresAuth: false,
-      title: 'Login'
+      title: 'Login',
+      titleKey: 'common.login'
     }
   },
   {
@@ -50,7 +51,8 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/auth/RegisterView.vue'),
     meta: {
       requiresAuth: false,
-      title: 'Register'
+      title: 'Register',
+      titleKey: 'auth.createAccount'
     }
   },
   {
@@ -86,7 +88,8 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/auth/ForgotPasswordView.vue'),
     meta: {
       requiresAuth: false,
-      title: 'Forgot Password'
+      title: 'Forgot Password',
+      titleKey: 'auth.forgotPasswordTitle'
     }
   },
   {
@@ -186,6 +189,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Purchase Subscription',
       titleKey: 'purchase.title',
       descriptionKey: 'purchase.description'
+    }
+  },
+  {
+    path: '/sora',
+    name: 'Sora',
+    component: () => import('@/views/user/SoraView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Sora',
+      titleKey: 'sora.title',
+      descriptionKey: 'sora.description'
     }
   },
 
@@ -315,6 +330,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/data-management',
+    name: 'AdminDataManagement',
+    component: () => import('@/views/admin/DataManagementView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Data Management',
+      titleKey: 'admin.dataManagement.title',
+      descriptionKey: 'admin.dataManagement.description'
+    }
+  },
+  {
     path: '/admin/settings',
     name: 'AdminSettings',
     component: () => import('@/views/admin/SettingsView.vue'),
@@ -390,7 +417,7 @@ router.beforeEach((to, _from, next) => {
 
   // Set page title
   const appStore = useAppStore()
-  document.title = resolveDocumentTitle(to.meta.title, appStore.siteName)
+  document.title = resolveDocumentTitle(to.meta.title, appStore.siteName, to.meta.titleKey as string)
 
   // Check if route requires authentication
   const requiresAuth = to.meta.requiresAuth !== false // Default to true

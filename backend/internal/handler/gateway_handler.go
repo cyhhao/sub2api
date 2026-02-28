@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -27,6 +28,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+const gatewayCompatibilityMetricsLogInterval = 1024
+
+var gatewayCompatibilityMetricsLogCounter atomic.Uint64
 
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
@@ -110,9 +115,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	defer h.maybeLogCompatibilityFallbackMetrics(reqLog)
 
 	// 读取请求体
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
@@ -141,16 +147,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 设置 max_tokens=1 + haiku 探测请求标识到 context 中
 	// 必须在 SetClaudeCodeClientContext 之前设置，因为 ClaudeCodeValidator 需要读取此标识进行绕过判断
 	if isMaxTokensOneHaikuRequest(reqModel, parsedReq.MaxTokens, reqStream) {
-		ctx := context.WithValue(c.Request.Context(), ctxkey.IsMaxTokensOneHaikuRequest, true)
+		ctx := service.WithIsMaxTokensOneHaikuRequest(c.Request.Context(), true, h.metadataBridgeEnabled())
 		c.Request = c.Request.WithContext(ctx)
 	}
 
-	// 检查是否为 Claude Code 客户端，设置到 context 中
-	SetClaudeCodeClientContext(c, body)
+	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
+	SetClaudeCodeClientContext(c, body, parsedReq)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
 
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ThinkingEnabled, parsedReq.ThinkingEnabled))
+	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
 
@@ -248,8 +254,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if apiKey.GroupID != nil {
 				prefetchedGroupID = *apiKey.GroupID
 			}
-			ctx := context.WithValue(c.Request.Context(), ctxkey.PrefetchedStickyAccountID, sessionBoundAccountID)
-			ctx = context.WithValue(ctx, ctxkey.PrefetchedStickyGroupID, prefetchedGroupID)
+			ctx := service.WithPrefetchedStickySession(c.Request.Context(), sessionBoundAccountID, prefetchedGroupID, h.metadataBridgeEnabled())
 			c.Request = c.Request.WithContext(ctx)
 		}
 	}
@@ -257,50 +262,38 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 
 	if platform == service.PlatformGemini {
-		maxAccountSwitches := h.maxAccountSwitchesGemini
-		switchCount := 0
-		failedAccountIDs := make(map[int64]struct{})
-		sameAccountRetryCount := make(map[int64]int) // 同账号重试计数
-		var lastFailoverErr *service.UpstreamFailoverError
-		var forceCacheBilling bool // 粘性会话切换时的缓存计费标记
+		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
 
 		// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 		// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
 		if h.gatewayService.IsSingleAntigravityAccountGroup(c.Request.Context(), apiKey.GroupID) {
-			ctx := context.WithValue(c.Request.Context(), ctxkey.SingleAccountRetry, true)
+			ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
 			c.Request = c.Request.WithContext(ctx)
 		}
 
 		for {
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, failedAccountIDs, "") // Gemini 不使用会话限制
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "") // Gemini 不使用会话限制
 			if err != nil {
-				if len(failedAccountIDs) == 0 {
-					reqLog.Warn("gateway.account_select_failed", zap.Error(err), zap.Int("excluded_account_count", len(failedAccountIDs)))
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+				if len(fs.FailedAccountIDs) == 0 {
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 					return
 				}
-				// Antigravity 单账号退避重试：分组内没有其他可用账号时，
-				// 对 503 错误不直接返回，而是清除排除列表、等待退避后重试同一个账号。
-				// 谷歌上游 503 (MODEL_CAPACITY_EXHAUSTED) 通常是暂时性的，等几秒就能恢复。
-				if lastFailoverErr != nil && lastFailoverErr.StatusCode == http.StatusServiceUnavailable && switchCount <= maxAccountSwitches {
-					if sleepAntigravitySingleAccountBackoff(c.Request.Context(), switchCount) {
-						reqLog.Warn("gateway.single_account_retrying",
-							zap.Int("retry_count", switchCount),
-							zap.Int("max_retries", maxAccountSwitches),
-						)
-						failedAccountIDs = make(map[int64]struct{})
-						// 设置 context 标记，让 Service 层预检查等待限流过期而非直接切换
-						ctx := context.WithValue(c.Request.Context(), ctxkey.SingleAccountRetry, true)
-						c.Request = c.Request.WithContext(ctx)
-						continue
+				action := fs.HandleSelectionExhausted(c.Request.Context())
+				switch action {
+				case FailoverContinue:
+					ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
+					c.Request = c.Request.WithContext(ctx)
+					continue
+				case FailoverCanceled:
+					return
+				default: // FailoverExhausted
+					if fs.LastFailoverErr != nil {
+						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 					}
+					return
 				}
-				if lastFailoverErr != nil {
-					h.handleFailoverExhausted(c, lastFailoverErr, service.PlatformGemini, streamStarted)
-				} else {
-					h.handleFailoverExhaustedSimple(c, 502, streamStarted)
-				}
-				return
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -376,8 +369,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 转发请求 - 根据账号平台分流
 			var result *service.ForwardResult
 			requestCtx := c.Request.Context()
-			if switchCount > 0 {
-				requestCtx = context.WithValue(requestCtx, ctxkey.AccountSwitchCount, switchCount)
+			if fs.SwitchCount > 0 {
+				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
 			if account.Platform == service.PlatformAntigravity {
 				result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
@@ -390,45 +383,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					lastFailoverErr = failoverErr
-					if needForceCacheBilling(hasBoundSession, failoverErr) {
-						forceCacheBilling = true
-					}
-
-					// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
-					if failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < maxSameAccountRetries {
-						sameAccountRetryCount[account.ID]++
-						log.Printf("Account %d: retryable error %d, same-account retry %d/%d",
-							account.ID, failoverErr.StatusCode, sameAccountRetryCount[account.ID], maxSameAccountRetries)
-						if !sleepSameAccountRetryDelay(c.Request.Context()) {
-							return
-						}
+					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					switch action {
+					case FailoverContinue:
 						continue
-					}
-
-					// 同账号重试用尽，执行临时封禁并切换账号
-					if failoverErr.RetryableOnSameAccount {
-						h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
-					}
-
-					failedAccountIDs[account.ID] = struct{}{}
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, streamStarted)
+					case FailoverExhausted:
+						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+						return
+					case FailoverCanceled:
 						return
 					}
-					switchCount++
-					reqLog.Warn("gateway.upstream_failover_switching",
-						zap.Int64("account_id", account.ID),
-						zap.Int("upstream_status", failoverErr.StatusCode),
-						zap.Int("switch_count", switchCount),
-						zap.Int("max_switches", maxAccountSwitches),
-					)
-					if account.Platform == service.PlatformAntigravity {
-						if !sleepFailoverDelay(c.Request.Context(), switchCount) {
-							return
-						}
-					}
-					continue
 				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				reqLog.Error("gateway.forward_failed",
@@ -453,7 +417,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					Subscription:      subscription,
 					UserAgent:         userAgent,
 					IPAddress:         clientIP,
-					ForceCacheBilling: forceCacheBilling,
+					ForceCacheBilling: fs.ForceCacheBilling,
 					APIKeyService:     h.apiKeyService,
 				}); err != nil {
 					logger.L().With(
@@ -481,50 +445,38 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 	// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
 	if h.gatewayService.IsSingleAntigravityAccountGroup(c.Request.Context(), currentAPIKey.GroupID) {
-		ctx := context.WithValue(c.Request.Context(), ctxkey.SingleAccountRetry, true)
+		ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
 		c.Request = c.Request.WithContext(ctx)
 	}
 
 	for {
-		maxAccountSwitches := h.maxAccountSwitches
-		switchCount := 0
-		failedAccountIDs := make(map[int64]struct{})
-		sameAccountRetryCount := make(map[int64]int) // 同账号重试计数
-		var lastFailoverErr *service.UpstreamFailoverError
+		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
-		var forceCacheBilling bool // 粘性会话切换时的缓存计费标记
 
 		for {
 			// 选择支持该模型的账号
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, failedAccountIDs, parsedReq.MetadataUserID)
+			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID)
 			if err != nil {
-				if len(failedAccountIDs) == 0 {
-					reqLog.Warn("gateway.account_select_failed", zap.Error(err), zap.Int("excluded_account_count", len(failedAccountIDs)))
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+				if len(fs.FailedAccountIDs) == 0 {
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 					return
 				}
-				// Antigravity 单账号退避重试：分组内没有其他可用账号时，
-				// 对 503 错误不直接返回，而是清除排除列表、等待退避后重试同一个账号。
-				// 谷歌上游 503 (MODEL_CAPACITY_EXHAUSTED) 通常是暂时性的，等几秒就能恢复。
-				if lastFailoverErr != nil && lastFailoverErr.StatusCode == http.StatusServiceUnavailable && switchCount <= maxAccountSwitches {
-					if sleepAntigravitySingleAccountBackoff(c.Request.Context(), switchCount) {
-						reqLog.Warn("gateway.single_account_retrying",
-							zap.Int("retry_count", switchCount),
-							zap.Int("max_retries", maxAccountSwitches),
-						)
-						failedAccountIDs = make(map[int64]struct{})
-						// 设置 context 标记，让 Service 层预检查等待限流过期而非直接切换
-						ctx := context.WithValue(c.Request.Context(), ctxkey.SingleAccountRetry, true)
-						c.Request = c.Request.WithContext(ctx)
-						continue
+				action := fs.HandleSelectionExhausted(c.Request.Context())
+				switch action {
+				case FailoverContinue:
+					ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
+					c.Request = c.Request.WithContext(ctx)
+					continue
+				case FailoverCanceled:
+					return
+				default: // FailoverExhausted
+					if fs.LastFailoverErr != nil {
+						h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
+					} else {
+						h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 					}
+					return
 				}
-				if lastFailoverErr != nil {
-					h.handleFailoverExhausted(c, lastFailoverErr, platform, streamStarted)
-				} else {
-					h.handleFailoverExhaustedSimple(c, 502, streamStarted)
-				}
-				return
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -600,8 +552,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 转发请求 - 根据账号平台分流
 			var result *service.ForwardResult
 			requestCtx := c.Request.Context()
-			if switchCount > 0 {
-				requestCtx = context.WithValue(requestCtx, ctxkey.AccountSwitchCount, switchCount)
+			if fs.SwitchCount > 0 {
+				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, body, hasBoundSession)
@@ -657,45 +609,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					lastFailoverErr = failoverErr
-					if needForceCacheBilling(hasBoundSession, failoverErr) {
-						forceCacheBilling = true
-					}
-
-					// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
-					if failoverErr.RetryableOnSameAccount && sameAccountRetryCount[account.ID] < maxSameAccountRetries {
-						sameAccountRetryCount[account.ID]++
-						log.Printf("Account %d: retryable error %d, same-account retry %d/%d",
-							account.ID, failoverErr.StatusCode, sameAccountRetryCount[account.ID], maxSameAccountRetries)
-						if !sleepSameAccountRetryDelay(c.Request.Context()) {
-							return
-						}
+					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					switch action {
+					case FailoverContinue:
 						continue
-					}
-
-					// 同账号重试用尽，执行临时封禁并切换账号
-					if failoverErr.RetryableOnSameAccount {
-						h.gatewayService.TempUnscheduleRetryableError(c.Request.Context(), account.ID, failoverErr)
-					}
-
-					failedAccountIDs[account.ID] = struct{}{}
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, account.Platform, streamStarted)
+					case FailoverExhausted:
+						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
+						return
+					case FailoverCanceled:
 						return
 					}
-					switchCount++
-					reqLog.Warn("gateway.upstream_failover_switching",
-						zap.Int64("account_id", account.ID),
-						zap.Int("upstream_status", failoverErr.StatusCode),
-						zap.Int("switch_count", switchCount),
-						zap.Int("max_switches", maxAccountSwitches),
-					)
-					if account.Platform == service.PlatformAntigravity {
-						if !sleepFailoverDelay(c.Request.Context(), switchCount) {
-							return
-						}
-					}
-					continue
 				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				reqLog.Error("gateway.forward_failed",
@@ -720,7 +643,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					Subscription:      currentSubscription,
 					UserAgent:         userAgent,
 					IPAddress:         clientIP,
-					ForceCacheBilling: forceCacheBilling,
+					ForceCacheBilling: fs.ForceCacheBilling,
 					APIKeyService:     h.apiKeyService,
 				}); err != nil {
 					logger.L().With(
@@ -733,11 +656,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					).Error("gateway.record_usage_failed", zap.Error(err))
 				}
 			})
-			reqLog.Debug("gateway.request_completed",
-				zap.Int64("account_id", account.ID),
-				zap.Int("switch_count", switchCount),
-				zap.Bool("fallback_used", fallbackUsed),
-			)
 			return
 		}
 		if !retryWithFallback {
@@ -982,69 +900,6 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 		fmt.Sprintf("Concurrency limit exceeded for %s, please retry later", slotType), streamStarted)
 }
 
-// needForceCacheBilling 判断 failover 时是否需要强制缓存计费
-// 粘性会话切换账号、或上游明确标记时，将 input_tokens 转为 cache_read 计费
-func needForceCacheBilling(hasBoundSession bool, failoverErr *service.UpstreamFailoverError) bool {
-	return hasBoundSession || (failoverErr != nil && failoverErr.ForceCacheBilling)
-}
-
-const (
-	// maxSameAccountRetries 同账号重试次数上限（针对 RetryableOnSameAccount 错误）
-	maxSameAccountRetries = 2
-	// sameAccountRetryDelay 同账号重试间隔
-	sameAccountRetryDelay = 500 * time.Millisecond
-)
-
-// sleepSameAccountRetryDelay 同账号重试固定延时，返回 false 表示 context 已取消。
-func sleepSameAccountRetryDelay(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(sameAccountRetryDelay):
-		return true
-	}
-}
-
-// sleepFailoverDelay 账号切换线性递增延时：第1次0s、第2次1s、第3次2s…
-// 返回 false 表示 context 已取消。
-func sleepFailoverDelay(ctx context.Context, switchCount int) bool {
-	delay := time.Duration(switchCount-1) * time.Second
-	if delay <= 0 {
-		return true
-	}
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(delay):
-		return true
-	}
-}
-
-// sleepAntigravitySingleAccountBackoff Antigravity 平台单账号分组的 503 退避重试延时。
-// 当分组内只有一个可用账号且上游返回 503（MODEL_CAPACITY_EXHAUSTED）时使用，
-// 采用短固定延时策略。Service 层在 SingleAccountRetry 模式下已经做了充分的原地重试
-// （最多 3 次、总等待 30s），所以 Handler 层的退避只需短暂等待即可。
-// 返回 false 表示 context 已取消。
-func sleepAntigravitySingleAccountBackoff(ctx context.Context, retryCount int) bool {
-	// 固定短延时：2s
-	// Service 层已经在原地等待了足够长的时间（retryDelay × 重试次数），
-	// Handler 层只需短暂间隔后重新进入 Service 层即可。
-	const delay = 2 * time.Second
-
-	logger.L().With(
-		zap.String("component", "handler.gateway.failover"),
-		zap.Duration("delay", delay),
-		zap.Int("retry_count", retryCount),
-	).Info("gateway.single_account_backoff_waiting")
-
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(delay):
-		return true
-	}
-}
-
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
@@ -1107,20 +962,8 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			// Send error event in SSE format with proper JSON marshaling
-			errorData := map[string]any{
-				"type": "error",
-				"error": map[string]string{
-					"type":    errType,
-					"message": message,
-				},
-			}
-			jsonBytes, err := json.Marshal(errorData)
-			if err != nil {
-				_ = c.Error(err)
-				return
-			}
-			errorEvent := fmt.Sprintf("data: %s\n\n", string(jsonBytes))
+			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
+			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
@@ -1175,9 +1018,10 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	defer h.maybeLogCompatibilityFallbackMetrics(reqLog)
 
 	// 读取请求体
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
@@ -1192,9 +1036,6 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	// 检查是否为 Claude Code 客户端，设置到 context 中
-	SetClaudeCodeClientContext(c, body)
-
 	setOpsRequestContext(c, "", false, body)
 
 	parsedReq, err := service.ParseGatewayRequest(body, domain.PlatformAnthropic)
@@ -1202,9 +1043,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	// count_tokens 走 messages 严格校验时，复用已解析请求，避免二次反序列化。
+	SetClaudeCodeClientContext(c, body, parsedReq)
 	reqLog = reqLog.With(zap.String("model", parsedReq.Model), zap.Bool("stream", parsedReq.Stream))
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ThinkingEnabled, parsedReq.ThinkingEnabled))
+	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
 
 	// 验证 model 必填
 	if parsedReq.Model == "" {
@@ -1368,24 +1211,8 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 		textDeltas = []string{"New", " Conversation"}
 	}
 
-	// Build message_start event with proper JSON marshaling
-	messageStart := map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            msgID,
-			"type":          "message",
-			"role":          "assistant",
-			"model":         model,
-			"content":       []any{},
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage": map[string]int{
-				"input_tokens":  10,
-				"output_tokens": 0,
-			},
-		},
-	}
-	messageStartJSON, _ := json.Marshal(messageStart)
+	// Build message_start event with fixed schema.
+	messageStartJSON := `{"type":"message_start","message":{"id":` + strconv.Quote(msgID) + `,"type":"message","role":"assistant","model":` + strconv.Quote(model) + `,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`
 
 	// Build events
 	events := []string{
@@ -1395,31 +1222,12 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 
 	// Add text deltas
 	for _, text := range textDeltas {
-		delta := map[string]any{
-			"type":  "content_block_delta",
-			"index": 0,
-			"delta": map[string]string{
-				"type": "text_delta",
-				"text": text,
-			},
-		}
-		deltaJSON, _ := json.Marshal(delta)
+		deltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + strconv.Quote(text) + `}}`
 		events = append(events, `event: content_block_delta`+"\n"+`data: `+string(deltaJSON))
 	}
 
 	// Add final events
-	messageDelta := map[string]any{
-		"type": "message_delta",
-		"delta": map[string]any{
-			"stop_reason":   "end_turn",
-			"stop_sequence": nil,
-		},
-		"usage": map[string]int{
-			"input_tokens":  10,
-			"output_tokens": outputTokens,
-		},
-	}
-	messageDeltaJSON, _ := json.Marshal(messageDelta)
+	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
 
 	events = append(events,
 		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
@@ -1517,6 +1325,30 @@ func billingErrorDetails(err error) (status int, code, message string) {
 	return http.StatusForbidden, "billing_error", msg
 }
 
+func (h *GatewayHandler) metadataBridgeEnabled() bool {
+	if h == nil || h.cfg == nil {
+		return true
+	}
+	return h.cfg.Gateway.OpenAIWS.MetadataBridgeEnabled
+}
+
+func (h *GatewayHandler) maybeLogCompatibilityFallbackMetrics(reqLog *zap.Logger) {
+	if reqLog == nil {
+		return
+	}
+	if gatewayCompatibilityMetricsLogCounter.Add(1)%gatewayCompatibilityMetricsLogInterval != 0 {
+		return
+	}
+	metrics := service.SnapshotOpenAICompatibilityFallbackMetrics()
+	reqLog.Info("gateway.compatibility_fallback_metrics",
+		zap.Int64("session_hash_legacy_read_fallback_total", metrics.SessionHashLegacyReadFallbackTotal),
+		zap.Int64("session_hash_legacy_read_fallback_hit", metrics.SessionHashLegacyReadFallbackHit),
+		zap.Int64("session_hash_legacy_dual_write_total", metrics.SessionHashLegacyDualWriteTotal),
+		zap.Float64("session_hash_legacy_read_hit_rate", metrics.SessionHashLegacyReadHitRate),
+		zap.Int64("metadata_legacy_fallback_total", metrics.MetadataLegacyFallbackTotal),
+	)
+}
+
 func (h *GatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
 	if task == nil {
 		return
@@ -1528,5 +1360,13 @@ func (h *GatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
 	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logger.L().With(
+				zap.String("component", "handler.gateway.messages"),
+				zap.Any("panic", recovered),
+			).Error("gateway.usage_record_task_panic_recovered")
+		}
+	}()
 	task(ctx)
 }

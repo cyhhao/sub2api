@@ -1,6 +1,51 @@
 {
   "actions": [
     {
+      "action": "update",
+      "resolves": [
+        {
+          "id": 1112453,
+          "path": ".>@lobehub/icons>@lobehub/ui>mermaid>@mermaid-js/parser>langium>chevrotain>lodash-es",
+          "dev": false,
+          "optional": false,
+          "bundled": false
+        }
+      ],
+      "module": null,
+      "target": null,
+      "depth": 3
+    },
+    {
+      "action": "update",
+      "resolves": [
+        {
+          "id": 1112453,
+          "path": ".>@lobehub/icons>@lobehub/ui>mermaid>lodash-es",
+          "dev": false,
+          "optional": false,
+          "bundled": false
+        }
+      ],
+      "module": "lodash-es",
+      "target": "4.17.23",
+      "depth": 5
+    },
+    {
+      "action": "update",
+      "resolves": [
+        {
+          "id": 1112455,
+          "path": ".>@lobehub/icons>@lobehub/ui>ahooks>lodash",
+          "dev": false,
+          "optional": false,
+          "bundled": false
+        }
+      ],
+      "module": "lodash",
+      "target": "4.17.23",
+      "depth": 5
+    },
+    {
       "action": "review",
       "module": "xlsx",
       "resolves": [
@@ -27,7 +72,7 @@
         {
           "version": "0.18.5",
           "paths": [
-            ".>xlsx"
+            ". > xlsx@0.18.5"
           ]
         }
       ],
@@ -66,7 +111,7 @@
         {
           "version": "0.18.5",
           "paths": [
-            ".>xlsx"
+            ". > xlsx@0.18.5"
           ]
         }
       ],
@@ -99,6 +144,99 @@
         "CWE-1333"
       ],
       "url": "https://github.com/advisories/GHSA-5pgg-2g8v-p4x9"
+    },
+    "1112453": {
+      "findings": [
+        {
+          "version": "4.17.21",
+          "paths": [
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain@11.0.3 > @chevrotain/cst-dts-gen@11.0.3 > @chevrotain/gast@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain@11.0.3 > @chevrotain/cst-dts-gen@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain@11.0.3 > @chevrotain/gast@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain-allstar@0.3.1 > chevrotain@11.0.3 > @chevrotain/cst-dts-gen@11.0.3 > @chevrotain/gast@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain-allstar@0.3.1 > chevrotain@11.0.3 > @chevrotain/cst-dts-gen@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain-allstar@0.3.1 > chevrotain@11.0.3 > @chevrotain/gast@11.0.3 > lodash-es@4.17.21",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain-allstar@0.3.1 > chevrotain@11.0.3 > lodash-es@4.17.21"
+          ]
+        },
+        {
+          "version": "4.17.22",
+          "paths": [
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > @mermaid-js/parser@0.6.3 > langium@3.3.1 > chevrotain-allstar@0.3.1 > lodash-es@4.17.22",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > dagre-d3-es@7.0.13 > lodash-es@4.17.22",
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > mermaid@11.12.2 > lodash-es@4.17.22"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/lodash/lodash/security/advisories/GHSA-xxjr-mmjv-4gpg\n- https://nvd.nist.gov/vuln/detail/CVE-2025-13465\n- https://github.com/lodash/lodash/commit/edadd452146f7e4bad4ea684e955708931d84d81\n- https://github.com/advisories/GHSA-xxjr-mmjv-4gpg",
+      "created": "2026-01-21T23:01:22.000Z",
+      "id": 1112453,
+      "npm_advisory_id": null,
+      "overview": "### Impact\n\nLodash versions 4.0.0 through 4.17.22 are vulnerable to prototype pollution in the `_.unset` and `_.omit` functions. An attacker can pass crafted paths which cause Lodash to delete methods from global prototypes. \n\nThe issue permits deletion of properties but does not allow overwriting their original behavior.  \n\n### Patches\n\nThis issue is patched on 4.17.23.",
+      "reported_by": null,
+      "title": "Lodash has Prototype Pollution Vulnerability in `_.unset` and `_.omit` functions",
+      "metadata": null,
+      "cves": [
+        "CVE-2025-13465"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "lodash-es",
+      "vulnerable_versions": ">=4.0.0 <=4.17.22",
+      "github_advisory_id": "GHSA-xxjr-mmjv-4gpg",
+      "recommendation": "Upgrade to version 4.17.23 or later",
+      "patched_versions": ">=4.17.23",
+      "updated": "2026-01-21T23:01:23.000Z",
+      "cvss": {
+        "score": 6.5,
+        "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L"
+      },
+      "cwe": [
+        "CWE-1321"
+      ],
+      "url": "https://github.com/advisories/GHSA-xxjr-mmjv-4gpg"
+    },
+    "1112455": {
+      "findings": [
+        {
+          "version": "4.17.21",
+          "paths": [
+            ". > @lobehub/icons@4.0.2 > @lobehub/ui@4.9.2 > ahooks@3.9.6 > lodash@4.17.21"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/lodash/lodash/security/advisories/GHSA-xxjr-mmjv-4gpg\n- https://nvd.nist.gov/vuln/detail/CVE-2025-13465\n- https://github.com/lodash/lodash/commit/edadd452146f7e4bad4ea684e955708931d84d81\n- https://github.com/advisories/GHSA-xxjr-mmjv-4gpg",
+      "created": "2026-01-21T23:01:22.000Z",
+      "id": 1112455,
+      "npm_advisory_id": null,
+      "overview": "### Impact\n\nLodash versions 4.0.0 through 4.17.22 are vulnerable to prototype pollution in the `_.unset` and `_.omit` functions. An attacker can pass crafted paths which cause Lodash to delete methods from global prototypes. \n\nThe issue permits deletion of properties but does not allow overwriting their original behavior.  \n\n### Patches\n\nThis issue is patched on 4.17.23.",
+      "reported_by": null,
+      "title": "Lodash has Prototype Pollution Vulnerability in `_.unset` and `_.omit` functions",
+      "metadata": null,
+      "cves": [
+        "CVE-2025-13465"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "lodash",
+      "vulnerable_versions": ">=4.0.0 <=4.17.22",
+      "github_advisory_id": "GHSA-xxjr-mmjv-4gpg",
+      "recommendation": "Upgrade to version 4.17.23 or later",
+      "patched_versions": ">=4.17.23",
+      "updated": "2026-01-21T23:01:23.000Z",
+      "cvss": {
+        "score": 6.5,
+        "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L"
+      },
+      "cwe": [
+        "CWE-1321"
+      ],
+      "url": "https://github.com/advisories/GHSA-xxjr-mmjv-4gpg"
     }
   },
   "muted": [],
@@ -106,13 +244,13 @@
     "vulnerabilities": {
       "info": 0,
       "low": 0,
-      "moderate": 0,
+      "moderate": 3,
       "high": 2,
       "critical": 0
     },
-    "dependencies": 639,
+    "dependencies": 670,
     "devDependencies": 0,
     "optionalDependencies": 0,
-    "totalDependencies": 639
+    "totalDependencies": 670
   }
 }

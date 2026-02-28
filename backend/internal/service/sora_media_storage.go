@@ -157,6 +157,64 @@ func (s *SoraMediaStorage) StoreFromURLs(ctx context.Context, mediaType string, 
 	return results, nil
 }
 
+// TotalSizeByRelativePaths 统计本地存储路径总大小（仅统计 /image 和 /video 路径）。
+func (s *SoraMediaStorage) TotalSizeByRelativePaths(paths []string) (int64, error) {
+	if s == nil || len(paths) == 0 {
+		return 0, nil
+	}
+	var total int64
+	for _, p := range paths {
+		localPath, err := s.resolveLocalPath(p)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(localPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, err
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+	}
+	return total, nil
+}
+
+// DeleteByRelativePaths 删除本地媒体路径（仅删除 /image 和 /video 路径）。
+func (s *SoraMediaStorage) DeleteByRelativePaths(paths []string) error {
+	if s == nil || len(paths) == 0 {
+		return nil
+	}
+	var lastErr error
+	for _, p := range paths {
+		localPath, err := s.resolveLocalPath(p)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func (s *SoraMediaStorage) resolveLocalPath(relativePath string) (string, error) {
+	if s == nil || strings.TrimSpace(relativePath) == "" {
+		return "", errors.New("empty path")
+	}
+	cleaned := path.Clean(relativePath)
+	if !strings.HasPrefix(cleaned, "/image/") && !strings.HasPrefix(cleaned, "/video/") {
+		return "", errors.New("not a local media path")
+	}
+	if strings.TrimSpace(s.root) == "" {
+		return "", errors.New("storage root not configured")
+	}
+	relative := strings.TrimPrefix(cleaned, "/")
+	return filepath.Join(s.root, filepath.FromSlash(relative)), nil
+}
+
 func (s *SoraMediaStorage) downloadAndStore(ctx context.Context, mediaType, rawURL string) (string, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return "", errors.New("empty url")
@@ -181,7 +239,7 @@ func (s *SoraMediaStorage) downloadAndStore(ctx context.Context, mediaType, rawU
 			return relative, nil
 		}
 		if s.debug {
-			log.Printf("[SoraStorage] 下载失败(%d/%d): %s err=%v", attempt, retries, sanitizeSoraLogURL(rawURL), err)
+			log.Printf("[SoraStorage] 下载失败(%d/%d): %s err=%v", attempt, retries, sanitizeMediaLogURL(rawURL), err)
 		}
 		if attempt < retries {
 			time.Sleep(time.Duration(attempt*attempt) * time.Second)
@@ -252,7 +310,7 @@ func (s *SoraMediaStorage) downloadOnce(ctx context.Context, root, mediaType, ra
 
 	relative := path.Join("/", mediaType, datePath, filename)
 	if s.debug {
-		log.Printf("[SoraStorage] 已落地 %s -> %s", sanitizeSoraLogURL(rawURL), relative)
+		log.Printf("[SoraStorage] 已落地 %s -> %s", sanitizeMediaLogURL(rawURL), relative)
 	}
 	return relative, nil
 }
@@ -304,4 +362,20 @@ func removePartialDownload(root *os.Root, filePath string) {
 		return
 	}
 	_ = root.Remove(filePath)
+}
+
+// sanitizeMediaLogURL 脱敏 URL 用于日志记录（去除 query 参数中可能的 token 信息）
+func sanitizeMediaLogURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		if len(rawURL) > 80 {
+			return rawURL[:80] + "..."
+		}
+		return rawURL
+	}
+	safe := parsed.Scheme + "://" + parsed.Host + parsed.Path
+	if len(safe) > 120 {
+		return safe[:120] + "..."
+	}
+	return safe
 }

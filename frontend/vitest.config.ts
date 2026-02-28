@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config'
-import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
@@ -9,9 +9,6 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
       'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js'
     }
-  },
-  define: {
-    __INTLIFY_JIT_COMPILATION__: true
   },
   test: {
     globals: true,
@@ -37,8 +34,6 @@ export default defineConfig({
           lines: 80
         }
       }
-    },
-    setupFiles: ['./src/__tests__/setup.ts'],
-    testTimeout: 10000
+    }
   }
 })

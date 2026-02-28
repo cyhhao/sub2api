@@ -45,6 +45,9 @@ export interface AdminUser extends User {
   group_rates?: Record<number, number>
   // 当前并发数（仅管理员列表接口返回）
   current_concurrency?: number
+  // Sora 存储配额（字节）
+  sora_storage_quota_bytes: number
+  sora_storage_used_bytes: number
 }
 
 export interface LoginRequest {
@@ -91,6 +94,7 @@ export interface PublicSettings {
   purchase_subscription_enabled: boolean
   purchase_subscription_url: string
   linuxdo_oauth_enabled: boolean
+  sora_client_enabled: boolean
   version: string
 }
 
@@ -363,6 +367,8 @@ export interface Group {
   sora_image_price_540: number | null
   sora_video_price_per_request: number | null
   sora_video_price_per_request_hd: number | null
+  // Sora 存储配额（字节）
+  sora_storage_quota_bytes: number
   // Claude Code 客户端限制
   claude_code_only: boolean
   fallback_group_id: number | null
@@ -445,6 +451,7 @@ export interface CreateGroupRequest {
   sora_image_price_540?: number | null
   sora_video_price_per_request?: number | null
   sora_video_price_per_request_hd?: number | null
+  sora_storage_quota_bytes?: number
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
@@ -472,6 +479,7 @@ export interface UpdateGroupRequest {
   sora_image_price_540?: number | null
   sora_video_price_per_request?: number | null
   sora_video_price_per_request_hd?: number | null
+  sora_storage_quota_bytes?: number
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
@@ -581,6 +589,7 @@ export interface GeminiCredentials {
   token_type?: string
   scope?: string
   expires_at?: string
+  model_mapping?: Record<string, string>
 }
 
 export interface TempUnschedulableRule {
@@ -766,6 +775,26 @@ export interface UpdateAccountRequest {
   confirm_mixed_channel_risk?: boolean
 }
 
+export interface CheckMixedChannelRequest {
+  platform: AccountPlatform
+  group_ids: number[]
+  account_id?: number
+}
+
+export interface MixedChannelWarningDetails {
+  group_id: number
+  group_name: string
+  current_platform: string
+  other_platform: string
+}
+
+export interface CheckMixedChannelResponse {
+  has_risk: boolean
+  error?: string
+  message?: string
+  details?: MixedChannelWarningDetails
+}
+
 export interface CreateProxyRequest {
   name: string
   protocol: ProxyProtocol
@@ -838,6 +867,7 @@ export interface AdminDataImportResult {
 // ==================== Usage & Redeem Types ====================
 
 export type RedeemCodeType = 'balance' | 'concurrency' | 'subscription' | 'invitation'
+export type UsageRequestType = 'unknown' | 'sync' | 'stream' | 'ws_v2'
 
 export interface UsageLog {
   id: number
@@ -867,7 +897,9 @@ export interface UsageLog {
   rate_multiplier: number
   billing_type: number
 
+  request_type?: UsageRequestType
   stream: boolean
+  openai_ws_mode?: boolean
   duration_ms: number
   first_token_ms: number | null
 
@@ -913,6 +945,7 @@ export interface UsageCleanupFilters {
   account_id?: number
   group_id?: number
   model?: string | null
+  request_type?: UsageRequestType | null
   stream?: boolean | null
   billing_type?: number | null
 }
@@ -1157,6 +1190,7 @@ export interface UsageQueryParams {
   account_id?: number
   group_id?: number
   model?: string
+  request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
   start_date?: string

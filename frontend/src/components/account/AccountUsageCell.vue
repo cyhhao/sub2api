@@ -172,12 +172,12 @@
           color="purple"
         />
 
-        <!-- Claude 4.5 -->
+        <!-- Claude -->
         <UsageProgressBar
-          v-if="antigravityClaude45UsageFromAPI !== null"
-          :label="t('admin.accounts.usageWindow.claude45')"
-          :utilization="antigravityClaude45UsageFromAPI.utilization"
-          :resets-at="antigravityClaude45UsageFromAPI.resetTime"
+          v-if="antigravityClaudeUsageFromAPI !== null"
+          :label="t('admin.accounts.usageWindow.claude')"
+          :utilization="antigravityClaudeUsageFromAPI.utilization"
+          :resets-at="antigravityClaudeUsageFromAPI.resetTime"
           color="amber"
         />
       </div>
@@ -397,12 +397,17 @@ const antigravity3ProUsageFromAPI = computed(() =>
 // Gemini 3 Flash from API
 const antigravity3FlashUsageFromAPI = computed(() => getAntigravityUsageFromAPI(['gemini-3-flash']))
 
-// Gemini 3 Image from API
-const antigravity3ImageUsageFromAPI = computed(() => getAntigravityUsageFromAPI(['gemini-3-pro-image']))
+// Gemini Image from API
+const antigravity3ImageUsageFromAPI = computed(() =>
+  getAntigravityUsageFromAPI(['gemini-3.1-flash-image', 'gemini-3-pro-image'])
+)
 
-// Claude 4.5 from API
-const antigravityClaude45UsageFromAPI = computed(() =>
-  getAntigravityUsageFromAPI(['claude-sonnet-4-5', 'claude-opus-4-5-thinking'])
+// Claude from API (all Claude model variants)
+const antigravityClaudeUsageFromAPI = computed(() =>
+  getAntigravityUsageFromAPI([
+    'claude-sonnet-4-5', 'claude-opus-4-5-thinking',
+    'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-opus-4-6-thinking',
+  ])
 )
 
 // Antigravity 账户类型（从 load_code_assist 响应中提取）
