@@ -14,8 +14,9 @@
         </div>
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <ModelDistributionChart :model-stats="modelStats" :loading="chartsLoading" />
-          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+          <GroupDistributionChart :group-stats="groupStats" :loading="chartsLoading" />
         </div>
+        <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
       </div>
       <UsageFilters v-model="filters" v-model:startDate="startDate" v-model:endDate="endDate" :exporting="exporting" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel">
         <template #after-reset>
@@ -78,15 +79,16 @@ import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination fro
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
 import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
-import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
+import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { AdminUsageLog, TrendDataPoint, ModelStat } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
+import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
-const trendData = ref<TrendDataPoint[]>([]); const modelStats = ref<ModelStat[]>([]); const chartsLoading = ref(false); const granularity = ref<'day' | 'hour'>('day')
+const trendData = ref<TrendDataPoint[]>([]); const modelStats = ref<ModelStat[]>([]); const groupStats = ref<GroupStat[]>([]); const chartsLoading = ref(false); const granularity = ref<'day' | 'hour'>('day')
 let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
+let chartReqSeq = 0
 const exportProgress = reactive({ show: false, progress: 0, current: 0, total: 0, estimatedTime: '' })
 const cleanupDialogVisible = ref(false)
 
@@ -108,7 +110,7 @@ const loadLogs = async () => {
   try {
     const requestType = filters.value.request_type
     const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-    const res = await adminAPI.usage.list({ page: pagination.page, page_size: pagination.page_size, ...filters.value, stream: legacyStream === null ? undefined : legacyStream }, { signal: c.signal })
+    const res = await adminAPI.usage.list({ page: pagination.page, page_size: pagination.page_size, exact_total: false, ...filters.value, stream: legacyStream === null ? undefined : legacyStream }, { signal: c.signal })
     if(!c.signal.aborted) { usageLogs.value = res.items; pagination.total = res.total }
   } catch (error: any) { if(error?.name !== 'AbortError') console.error('Failed to load usage logs:', error) } finally { if(abortController === c) loading.value = false }
 }
@@ -123,14 +125,34 @@ const loadStats = async () => {
   }
 }
 const loadChartData = async () => {
+  const seq = ++chartReqSeq
   chartsLoading.value = true
   try {
     const requestType = filters.value.request_type
     const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-    const params = { start_date: filters.value.start_date || startDate.value, end_date: filters.value.end_date || endDate.value, granularity: granularity.value, user_id: filters.value.user_id, model: filters.value.model, api_key_id: filters.value.api_key_id, account_id: filters.value.account_id, group_id: filters.value.group_id, request_type: requestType, stream: legacyStream === null ? undefined : legacyStream, billing_type: filters.value.billing_type }
-    const [trendRes, modelRes] = await Promise.all([adminAPI.dashboard.getUsageTrend(params), adminAPI.dashboard.getModelStats({ start_date: params.start_date, end_date: params.end_date, user_id: params.user_id, model: params.model, api_key_id: params.api_key_id, account_id: params.account_id, group_id: params.group_id, request_type: params.request_type, stream: params.stream, billing_type: params.billing_type })])
-    trendData.value = trendRes.trend || []; modelStats.value = modelRes.models || []
-  } catch (error) { console.error('Failed to load chart data:', error) } finally { chartsLoading.value = false }
+    const snapshot = await adminAPI.dashboard.getSnapshotV2({
+      start_date: filters.value.start_date || startDate.value,
+      end_date: filters.value.end_date || endDate.value,
+      granularity: granularity.value,
+      user_id: filters.value.user_id,
+      model: filters.value.model,
+      api_key_id: filters.value.api_key_id,
+      account_id: filters.value.account_id,
+      group_id: filters.value.group_id,
+      request_type: requestType,
+      stream: legacyStream === null ? undefined : legacyStream,
+      billing_type: filters.value.billing_type,
+      include_stats: false,
+      include_trend: true,
+      include_model_stats: true,
+      include_group_stats: true,
+      include_users_trend: false
+    })
+    if (seq !== chartReqSeq) return
+    trendData.value = snapshot.trend || []
+    modelStats.value = snapshot.models || []
+    groupStats.value = snapshot.groups || []
+  } catch (error) { console.error('Failed to load chart data:', error) } finally { if (seq === chartReqSeq) chartsLoading.value = false }
 }
 const applyFilters = () => { pagination.page = 1; loadLogs(); loadStats(); loadChartData() }
 const refreshData = () => { loadLogs(); loadStats(); loadChartData() }
@@ -169,7 +191,7 @@ const exportToExcel = async () => {
     while (true) {
       const requestType = filters.value.request_type
       const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-      const res = await adminUsageAPI.list({ page: p, page_size: 100, ...filters.value, stream: legacyStream === null ? undefined : legacyStream }, { signal: c.signal })
+      const res = await adminUsageAPI.list({ page: p, page_size: 100, exact_total: true, ...filters.value, stream: legacyStream === null ? undefined : legacyStream }, { signal: c.signal })
       if (c.signal.aborted) break; if (p === 1) { total = res.total; exportProgress.total = total }
       const rows = (res.items || []).map((log: AdminUsageLog) => [
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
@@ -271,6 +293,14 @@ const handleColumnClickOutside = (event: MouseEvent) => {
   }
 }
 
-onMounted(() => { loadLogs(); loadStats(); loadChartData(); loadSavedColumns(); document.addEventListener('click', handleColumnClickOutside) })
+onMounted(() => {
+  loadLogs()
+  loadStats()
+  window.setTimeout(() => {
+    void loadChartData()
+  }, 120)
+  loadSavedColumns()
+  document.addEventListener('click', handleColumnClickOutside)
+})
 onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
 </script>

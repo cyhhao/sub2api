@@ -74,11 +74,12 @@ const LinuxDoConnectSyntheticEmailDomain = "@linuxdo-connect.invalid"
 // Setting keys
 const (
 	// 注册设置
-	SettingKeyRegistrationEnabled   = "registration_enabled"    // 是否开放注册
-	SettingKeyEmailVerifyEnabled    = "email_verify_enabled"    // 是否开启邮件验证
-	SettingKeyPromoCodeEnabled      = "promo_code_enabled"      // 是否启用优惠码功能
-	SettingKeyPasswordResetEnabled  = "password_reset_enabled"  // 是否启用忘记密码功能（需要先开启邮件验证）
-	SettingKeyInvitationCodeEnabled = "invitation_code_enabled" // 是否启用邀请码注册
+	SettingKeyRegistrationEnabled              = "registration_enabled"                // 是否开放注册
+	SettingKeyEmailVerifyEnabled               = "email_verify_enabled"                // 是否开启邮件验证
+	SettingKeyRegistrationEmailSuffixWhitelist = "registration_email_suffix_whitelist" // 注册邮箱后缀白名单（JSON 数组）
+	SettingKeyPromoCodeEnabled                 = "promo_code_enabled"                  // 是否启用优惠码功能
+	SettingKeyPasswordResetEnabled             = "password_reset_enabled"              // 是否启用忘记密码功能（需要先开启邮件验证）
+	SettingKeyInvitationCodeEnabled            = "invitation_code_enabled"             // 是否启用邀请码注册
 
 	// 邮件服务设置
 	SettingKeySMTPHost     = "smtp_host"      // SMTP服务器地址
@@ -113,12 +114,14 @@ const (
 	SettingKeyDocURL                      = "doc_url"                       // 文档链接
 	SettingKeyHomeContent                 = "home_content"                  // 首页内容（支持 Markdown/HTML，或 URL 作为 iframe src）
 	SettingKeyHideCcsImportButton         = "hide_ccs_import_button"        // 是否隐藏 API Keys 页面的导入 CCS 按钮
-	SettingKeyPurchaseSubscriptionEnabled = "purchase_subscription_enabled" // 是否展示“购买订阅”页面入口
-	SettingKeyPurchaseSubscriptionURL     = "purchase_subscription_url"     // “购买订阅”页面 URL（作为 iframe src）
+	SettingKeyPurchaseSubscriptionEnabled = "purchase_subscription_enabled" // 是否展示"购买订阅"页面入口
+	SettingKeyPurchaseSubscriptionURL     = "purchase_subscription_url"     // "购买订阅"页面 URL（作为 iframe src）
+	SettingKeyCustomMenuItems             = "custom_menu_items"             // 自定义菜单项（JSON 数组）
 
 	// 默认配置
-	SettingKeyDefaultConcurrency = "default_concurrency" // 新用户默认并发量
-	SettingKeyDefaultBalance     = "default_balance"     // 新用户默认余额
+	SettingKeyDefaultConcurrency   = "default_concurrency"   // 新用户默认并发量
+	SettingKeyDefaultBalance       = "default_balance"       // 新用户默认余额
+	SettingKeyDefaultSubscriptions = "default_subscriptions" // 新用户默认订阅列表（JSON）
 
 	// 管理员 API Key
 	SettingKeyAdminAPIKey = "admin_api_key" // 全局管理员 API Key（用于外部系统集成）
@@ -192,6 +195,16 @@ const (
 	// =========================
 
 	SettingKeySoraDefaultStorageQuotaBytes = "sora_default_storage_quota_bytes" // 新用户默认 Sora 存储配额（字节）
+
+	// =========================
+	// Claude Code Version Check
+	// =========================
+
+	// SettingKeyMinClaudeCodeVersion 最低 Claude Code 版本号要求 (semver, 如 "2.1.0"，空值=不检查)
+	SettingKeyMinClaudeCodeVersion = "min_claude_code_version"
+
+	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
+	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).

@@ -7,19 +7,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
-	ErrRegistrationDisabled  = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
-	ErrSettingNotFound       = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
-	ErrSoraS3ProfileNotFound = infraerrors.NotFound("SORA_S3_PROFILE_NOT_FOUND", "sora s3 profile not found")
-	ErrSoraS3ProfileExists   = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
+	ErrRegistrationDisabled   = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
+	ErrSettingNotFound        = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
+	ErrSoraS3ProfileNotFound  = infraerrors.NotFound("SORA_S3_PROFILE_NOT_FOUND", "sora s3 profile not found")
+	ErrSoraS3ProfileExists    = infraerrors.Conflict("SORA_S3_PROFILE_EXISTS", "sora s3 profile already exists")
+	ErrDefaultSubGroupInvalid = infraerrors.BadRequest(
+		"DEFAULT_SUBSCRIPTION_GROUP_INVALID",
+		"default subscription group must exist and be subscription type",
+	)
+	ErrDefaultSubGroupDuplicate = infraerrors.BadRequest(
+		"DEFAULT_SUBSCRIPTION_GROUP_DUPLICATE",
+		"default subscription group cannot be duplicated",
+	)
 )
 
 type SettingRepository interface {
@@ -32,13 +44,40 @@ type SettingRepository interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// cachedMinVersion 缓存最低 Claude Code 版本号（进程内缓存，60s TTL）
+type cachedMinVersion struct {
+	value     string // 空字符串 = 不检查
+	expiresAt int64  // unix nano
+}
+
+// minVersionCache 最低版本号进程内缓存
+var minVersionCache atomic.Value // *cachedMinVersion
+
+// minVersionSF 防止缓存过期时 thundering herd
+var minVersionSF singleflight.Group
+
+// minVersionCacheTTL 缓存有效期
+const minVersionCacheTTL = 60 * time.Second
+
+// minVersionErrorTTL DB 错误时的短缓存，快速重试
+const minVersionErrorTTL = 5 * time.Second
+
+// minVersionDBTimeout singleflight 内 DB 查询超时，独立于请求 context
+const minVersionDBTimeout = 5 * time.Second
+
+// DefaultSubscriptionGroupReader validates group references used by default subscriptions.
+type DefaultSubscriptionGroupReader interface {
+	GetByID(ctx context.Context, id int64) (*Group, error)
+}
+
 // SettingService 系统设置服务
 type SettingService struct {
-	settingRepo SettingRepository
-	cfg         *config.Config
-	onUpdate    func() // Callback when settings are updated (for cache invalidation)
-	onS3Update  func() // Callback when Sora S3 settings are updated
-	version     string // Application version
+	settingRepo           SettingRepository
+	defaultSubGroupReader DefaultSubscriptionGroupReader
+	cfg                   *config.Config
+	onUpdate              func() // Callback when settings are updated (for cache invalidation)
+	onS3Update            func() // Callback when Sora S3 settings are updated
+	version               string // Application version
 }
 
 // NewSettingService 创建系统设置服务实例
@@ -47,6 +86,11 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
+}
+
+// SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
+func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
+	s.defaultSubGroupReader = reader
 }
 
 // GetAllSettings 获取所有系统设置
@@ -64,6 +108,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	keys := []string{
 		SettingKeyRegistrationEnabled,
 		SettingKeyEmailVerifyEnabled,
+		SettingKeyRegistrationEmailSuffixWhitelist,
 		SettingKeyPromoCodeEnabled,
 		SettingKeyPasswordResetEnabled,
 		SettingKeyInvitationCodeEnabled,
@@ -81,6 +126,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyPurchaseSubscriptionEnabled,
 		SettingKeyPurchaseSubscriptionURL,
 		SettingKeySoraClientEnabled,
+		SettingKeyCustomMenuItems,
 		SettingKeyLinuxDoConnectEnabled,
 	}
 
@@ -99,28 +145,33 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	// Password reset requires email verification to be enabled
 	emailVerifyEnabled := settings[SettingKeyEmailVerifyEnabled] == "true"
 	passwordResetEnabled := emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true"
+	registrationEmailSuffixWhitelist := ParseRegistrationEmailSuffixWhitelist(
+		settings[SettingKeyRegistrationEmailSuffixWhitelist],
+	)
 
 	return &PublicSettings{
-		RegistrationEnabled:         settings[SettingKeyRegistrationEnabled] == "true",
-		EmailVerifyEnabled:          emailVerifyEnabled,
-		PromoCodeEnabled:            settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
-		PasswordResetEnabled:        passwordResetEnabled,
-		InvitationCodeEnabled:       settings[SettingKeyInvitationCodeEnabled] == "true",
-		TotpEnabled:                 settings[SettingKeyTotpEnabled] == "true",
-		TurnstileEnabled:            settings[SettingKeyTurnstileEnabled] == "true",
-		TurnstileSiteKey:            settings[SettingKeyTurnstileSiteKey],
-		SiteName:                    s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
-		SiteLogo:                    settings[SettingKeySiteLogo],
-		SiteSubtitle:                s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
-		APIBaseURL:                  settings[SettingKeyAPIBaseURL],
-		ContactInfo:                 settings[SettingKeyContactInfo],
-		DocURL:                      settings[SettingKeyDocURL],
-		HomeContent:                 settings[SettingKeyHomeContent],
-		HideCcsImportButton:         settings[SettingKeyHideCcsImportButton] == "true",
-		PurchaseSubscriptionEnabled: settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
-		PurchaseSubscriptionURL:     strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
-		SoraClientEnabled:           settings[SettingKeySoraClientEnabled] == "true",
-		LinuxDoOAuthEnabled:         linuxDoEnabled,
+		RegistrationEnabled:              settings[SettingKeyRegistrationEnabled] == "true",
+		EmailVerifyEnabled:               emailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist: registrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                 settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
+		PasswordResetEnabled:             passwordResetEnabled,
+		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
+		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
+		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
+		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
+		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
+		SiteLogo:                         settings[SettingKeySiteLogo],
+		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
+		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
+		ContactInfo:                      settings[SettingKeyContactInfo],
+		DocURL:                           settings[SettingKeyDocURL],
+		HomeContent:                      settings[SettingKeyHomeContent],
+		HideCcsImportButton:              settings[SettingKeyHideCcsImportButton] == "true",
+		PurchaseSubscriptionEnabled:      settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
+		PurchaseSubscriptionURL:          strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
+		SoraClientEnabled:                settings[SettingKeySoraClientEnabled] == "true",
+		CustomMenuItems:                  settings[SettingKeyCustomMenuItems],
+		LinuxDoOAuthEnabled:              linuxDoEnabled,
 	}, nil
 }
 
@@ -150,59 +201,187 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 
 	// Return a struct that matches the frontend's expected format
 	return &struct {
-		RegistrationEnabled         bool   `json:"registration_enabled"`
-		EmailVerifyEnabled          bool   `json:"email_verify_enabled"`
-		PromoCodeEnabled            bool   `json:"promo_code_enabled"`
-		PasswordResetEnabled        bool   `json:"password_reset_enabled"`
-		InvitationCodeEnabled       bool   `json:"invitation_code_enabled"`
-		TotpEnabled                 bool   `json:"totp_enabled"`
-		TurnstileEnabled            bool   `json:"turnstile_enabled"`
-		TurnstileSiteKey            string `json:"turnstile_site_key,omitempty"`
-		SiteName                    string `json:"site_name"`
-		SiteLogo                    string `json:"site_logo,omitempty"`
-		SiteSubtitle                string `json:"site_subtitle,omitempty"`
-		APIBaseURL                  string `json:"api_base_url,omitempty"`
-		ContactInfo                 string `json:"contact_info,omitempty"`
-		DocURL                      string `json:"doc_url,omitempty"`
-		HomeContent                 string `json:"home_content,omitempty"`
-		HideCcsImportButton         bool   `json:"hide_ccs_import_button"`
-		PurchaseSubscriptionEnabled bool   `json:"purchase_subscription_enabled"`
-		PurchaseSubscriptionURL     string `json:"purchase_subscription_url,omitempty"`
-		SoraClientEnabled           bool   `json:"sora_client_enabled"`
-		LinuxDoOAuthEnabled         bool   `json:"linuxdo_oauth_enabled"`
-		Version                     string `json:"version,omitempty"`
+		RegistrationEnabled              bool            `json:"registration_enabled"`
+		EmailVerifyEnabled               bool            `json:"email_verify_enabled"`
+		RegistrationEmailSuffixWhitelist []string        `json:"registration_email_suffix_whitelist"`
+		PromoCodeEnabled                 bool            `json:"promo_code_enabled"`
+		PasswordResetEnabled             bool            `json:"password_reset_enabled"`
+		InvitationCodeEnabled            bool            `json:"invitation_code_enabled"`
+		TotpEnabled                      bool            `json:"totp_enabled"`
+		TurnstileEnabled                 bool            `json:"turnstile_enabled"`
+		TurnstileSiteKey                 string          `json:"turnstile_site_key,omitempty"`
+		SiteName                         string          `json:"site_name"`
+		SiteLogo                         string          `json:"site_logo,omitempty"`
+		SiteSubtitle                     string          `json:"site_subtitle,omitempty"`
+		APIBaseURL                       string          `json:"api_base_url,omitempty"`
+		ContactInfo                      string          `json:"contact_info,omitempty"`
+		DocURL                           string          `json:"doc_url,omitempty"`
+		HomeContent                      string          `json:"home_content,omitempty"`
+		HideCcsImportButton              bool            `json:"hide_ccs_import_button"`
+		PurchaseSubscriptionEnabled      bool            `json:"purchase_subscription_enabled"`
+		PurchaseSubscriptionURL          string          `json:"purchase_subscription_url,omitempty"`
+		SoraClientEnabled                bool            `json:"sora_client_enabled"`
+		CustomMenuItems                  json.RawMessage `json:"custom_menu_items"`
+		LinuxDoOAuthEnabled              bool            `json:"linuxdo_oauth_enabled"`
+		Version                          string          `json:"version,omitempty"`
 	}{
-		RegistrationEnabled:         settings.RegistrationEnabled,
-		EmailVerifyEnabled:          settings.EmailVerifyEnabled,
-		PromoCodeEnabled:            settings.PromoCodeEnabled,
-		PasswordResetEnabled:        settings.PasswordResetEnabled,
-		InvitationCodeEnabled:       settings.InvitationCodeEnabled,
-		TotpEnabled:                 settings.TotpEnabled,
-		TurnstileEnabled:            settings.TurnstileEnabled,
-		TurnstileSiteKey:            settings.TurnstileSiteKey,
-		SiteName:                    settings.SiteName,
-		SiteLogo:                    settings.SiteLogo,
-		SiteSubtitle:                settings.SiteSubtitle,
-		APIBaseURL:                  settings.APIBaseURL,
-		ContactInfo:                 settings.ContactInfo,
-		DocURL:                      settings.DocURL,
-		HomeContent:                 settings.HomeContent,
-		HideCcsImportButton:         settings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled: settings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:     settings.PurchaseSubscriptionURL,
-		SoraClientEnabled:           settings.SoraClientEnabled,
-		LinuxDoOAuthEnabled:         settings.LinuxDoOAuthEnabled,
-		Version:                     s.version,
+		RegistrationEnabled:              settings.RegistrationEnabled,
+		EmailVerifyEnabled:               settings.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist: settings.RegistrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                 settings.PromoCodeEnabled,
+		PasswordResetEnabled:             settings.PasswordResetEnabled,
+		InvitationCodeEnabled:            settings.InvitationCodeEnabled,
+		TotpEnabled:                      settings.TotpEnabled,
+		TurnstileEnabled:                 settings.TurnstileEnabled,
+		TurnstileSiteKey:                 settings.TurnstileSiteKey,
+		SiteName:                         settings.SiteName,
+		SiteLogo:                         settings.SiteLogo,
+		SiteSubtitle:                     settings.SiteSubtitle,
+		APIBaseURL:                       settings.APIBaseURL,
+		ContactInfo:                      settings.ContactInfo,
+		DocURL:                           settings.DocURL,
+		HomeContent:                      settings.HomeContent,
+		HideCcsImportButton:              settings.HideCcsImportButton,
+		PurchaseSubscriptionEnabled:      settings.PurchaseSubscriptionEnabled,
+		PurchaseSubscriptionURL:          settings.PurchaseSubscriptionURL,
+		SoraClientEnabled:                settings.SoraClientEnabled,
+		CustomMenuItems:                  filterUserVisibleMenuItems(settings.CustomMenuItems),
+		LinuxDoOAuthEnabled:              settings.LinuxDoOAuthEnabled,
+		Version:                          s.version,
 	}, nil
+}
+
+// filterUserVisibleMenuItems filters out admin-only menu items from a raw JSON
+// array string, returning only items with visibility != "admin".
+func filterUserVisibleMenuItems(raw string) json.RawMessage {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return json.RawMessage("[]")
+	}
+	var items []struct {
+		Visibility string `json:"visibility"`
+	}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return json.RawMessage("[]")
+	}
+
+	// Parse full items to preserve all fields
+	var fullItems []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fullItems); err != nil {
+		return json.RawMessage("[]")
+	}
+
+	var filtered []json.RawMessage
+	for i, item := range items {
+		if item.Visibility != "admin" {
+			filtered = append(filtered, fullItems[i])
+		}
+	}
+	if len(filtered) == 0 {
+		return json.RawMessage("[]")
+	}
+	result, err := json.Marshal(filtered)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	return result
+}
+
+// GetFrameSrcOrigins returns deduplicated http(s) origins from purchase_subscription_url
+// and all custom_menu_items URLs. Used by the router layer for CSP frame-src injection.
+func (s *SettingService) GetFrameSrcOrigins(ctx context.Context) ([]string, error) {
+	settings, err := s.GetPublicSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	var origins []string
+
+	addOrigin := func(rawURL string) {
+		if origin := extractOriginFromURL(rawURL); origin != "" {
+			if _, ok := seen[origin]; !ok {
+				seen[origin] = struct{}{}
+				origins = append(origins, origin)
+			}
+		}
+	}
+
+	// purchase subscription URL
+	if settings.PurchaseSubscriptionEnabled {
+		addOrigin(settings.PurchaseSubscriptionURL)
+	}
+
+	// all custom menu items (including admin-only, since CSP must allow all iframes)
+	for _, item := range parseCustomMenuItemURLs(settings.CustomMenuItems) {
+		addOrigin(item)
+	}
+
+	return origins, nil
+}
+
+// extractOriginFromURL returns the scheme+host origin from rawURL.
+// Only http and https schemes are accepted.
+func extractOriginFromURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// parseCustomMenuItemURLs extracts URLs from a raw JSON array of custom menu items.
+func parseCustomMenuItemURLs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	var items []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil
+	}
+	urls := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.URL != "" {
+			urls = append(urls, item.URL)
+		}
+	}
+	return urls
 }
 
 // UpdateSettings 更新系统设置
 func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSettings) error {
+	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
+		return err
+	}
+	normalizedWhitelist, err := NormalizeRegistrationEmailSuffixWhitelist(settings.RegistrationEmailSuffixWhitelist)
+	if err != nil {
+		return infraerrors.BadRequest("INVALID_REGISTRATION_EMAIL_SUFFIX_WHITELIST", err.Error())
+	}
+	if normalizedWhitelist == nil {
+		normalizedWhitelist = []string{}
+	}
+	settings.RegistrationEmailSuffixWhitelist = normalizedWhitelist
+
 	updates := make(map[string]string)
 
 	// 注册设置
 	updates[SettingKeyRegistrationEnabled] = strconv.FormatBool(settings.RegistrationEnabled)
 	updates[SettingKeyEmailVerifyEnabled] = strconv.FormatBool(settings.EmailVerifyEnabled)
+	registrationEmailSuffixWhitelistJSON, err := json.Marshal(settings.RegistrationEmailSuffixWhitelist)
+	if err != nil {
+		return fmt.Errorf("marshal registration email suffix whitelist: %w", err)
+	}
+	updates[SettingKeyRegistrationEmailSuffixWhitelist] = string(registrationEmailSuffixWhitelistJSON)
 	updates[SettingKeyPromoCodeEnabled] = strconv.FormatBool(settings.PromoCodeEnabled)
 	updates[SettingKeyPasswordResetEnabled] = strconv.FormatBool(settings.PasswordResetEnabled)
 	updates[SettingKeyInvitationCodeEnabled] = strconv.FormatBool(settings.InvitationCodeEnabled)
@@ -246,10 +425,16 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	updates[SettingKeyPurchaseSubscriptionEnabled] = strconv.FormatBool(settings.PurchaseSubscriptionEnabled)
 	updates[SettingKeyPurchaseSubscriptionURL] = strings.TrimSpace(settings.PurchaseSubscriptionURL)
 	updates[SettingKeySoraClientEnabled] = strconv.FormatBool(settings.SoraClientEnabled)
+	updates[SettingKeyCustomMenuItems] = settings.CustomMenuItems
 
 	// 默认配置
 	updates[SettingKeyDefaultConcurrency] = strconv.Itoa(settings.DefaultConcurrency)
 	updates[SettingKeyDefaultBalance] = strconv.FormatFloat(settings.DefaultBalance, 'f', 8, 64)
+	defaultSubsJSON, err := json.Marshal(settings.DefaultSubscriptions)
+	if err != nil {
+		return fmt.Errorf("marshal default subscriptions: %w", err)
+	}
+	updates[SettingKeyDefaultSubscriptions] = string(defaultSubsJSON)
 
 	// Model fallback configuration
 	updates[SettingKeyEnableModelFallback] = strconv.FormatBool(settings.EnableModelFallback)
@@ -270,11 +455,64 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		updates[SettingKeyOpsMetricsIntervalSeconds] = strconv.Itoa(settings.OpsMetricsIntervalSeconds)
 	}
 
-	err := s.settingRepo.SetMultiple(ctx, updates)
-	if err == nil && s.onUpdate != nil {
-		s.onUpdate() // Invalidate cache after settings update
+	// Claude Code version check
+	updates[SettingKeyMinClaudeCodeVersion] = settings.MinClaudeCodeVersion
+
+	// 分组隔离
+	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
+
+	err = s.settingRepo.SetMultiple(ctx, updates)
+	if err == nil {
+		// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
+		minVersionSF.Forget("min_version")
+		minVersionCache.Store(&cachedMinVersion{
+			value:     settings.MinClaudeCodeVersion,
+			expiresAt: time.Now().Add(minVersionCacheTTL).UnixNano(),
+		})
+		if s.onUpdate != nil {
+			s.onUpdate() // Invalidate cache after settings update
+		}
 	}
 	return err
+}
+
+func (s *SettingService) validateDefaultSubscriptionGroups(ctx context.Context, items []DefaultSubscriptionSetting) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	checked := make(map[int64]struct{}, len(items))
+	for _, item := range items {
+		if item.GroupID <= 0 {
+			continue
+		}
+		if _, ok := checked[item.GroupID]; ok {
+			return ErrDefaultSubGroupDuplicate.WithMetadata(map[string]string{
+				"group_id": strconv.FormatInt(item.GroupID, 10),
+			})
+		}
+		checked[item.GroupID] = struct{}{}
+		if s.defaultSubGroupReader == nil {
+			continue
+		}
+
+		group, err := s.defaultSubGroupReader.GetByID(ctx, item.GroupID)
+		if err != nil {
+			if errors.Is(err, ErrGroupNotFound) {
+				return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
+					"group_id": strconv.FormatInt(item.GroupID, 10),
+				})
+			}
+			return fmt.Errorf("get default subscription group %d: %w", item.GroupID, err)
+		}
+		if !group.IsSubscriptionType() {
+			return ErrDefaultSubGroupInvalid.WithMetadata(map[string]string{
+				"group_id": strconv.FormatInt(item.GroupID, 10),
+			})
+		}
+	}
+
+	return nil
 }
 
 // IsRegistrationEnabled 检查是否开放注册
@@ -294,6 +532,15 @@ func (s *SettingService) IsEmailVerifyEnabled(ctx context.Context) bool {
 		return false
 	}
 	return value == "true"
+}
+
+// GetRegistrationEmailSuffixWhitelist returns normalized registration email suffix whitelist.
+func (s *SettingService) GetRegistrationEmailSuffixWhitelist(ctx context.Context) []string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyRegistrationEmailSuffixWhitelist)
+	if err != nil {
+		return []string{}
+	}
+	return ParseRegistrationEmailSuffixWhitelist(value)
 }
 
 // IsPromoCodeEnabled 检查是否启用优惠码功能
@@ -376,6 +623,15 @@ func (s *SettingService) GetDefaultBalance(ctx context.Context) float64 {
 	return s.cfg.Default.UserBalance
 }
 
+// GetDefaultSubscriptions 获取新用户默认订阅配置列表。
+func (s *SettingService) GetDefaultSubscriptions(ctx context.Context) []DefaultSubscriptionSetting {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyDefaultSubscriptions)
+	if err != nil {
+		return nil
+	}
+	return parseDefaultSubscriptions(value)
+}
+
 // InitializeDefaultSettings 初始化默认设置
 func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 	// 检查是否已有设置
@@ -390,18 +646,21 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 	// 初始化默认设置
 	defaults := map[string]string{
-		SettingKeyRegistrationEnabled:         "true",
-		SettingKeyEmailVerifyEnabled:          "false",
-		SettingKeyPromoCodeEnabled:            "true", // 默认启用优惠码功能
-		SettingKeySiteName:                    "Sub2API",
-		SettingKeySiteLogo:                    "",
-		SettingKeyPurchaseSubscriptionEnabled: "false",
-		SettingKeyPurchaseSubscriptionURL:     "",
-		SettingKeySoraClientEnabled:           "false",
-		SettingKeyDefaultConcurrency:          strconv.Itoa(s.cfg.Default.UserConcurrency),
-		SettingKeyDefaultBalance:              strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
-		SettingKeySMTPPort:                    "587",
-		SettingKeySMTPUseTLS:                  "false",
+		SettingKeyRegistrationEnabled:              "true",
+		SettingKeyEmailVerifyEnabled:               "false",
+		SettingKeyRegistrationEmailSuffixWhitelist: "[]",
+		SettingKeyPromoCodeEnabled:                 "true", // 默认启用优惠码功能
+		SettingKeySiteName:                         "Sub2API",
+		SettingKeySiteLogo:                         "",
+		SettingKeyPurchaseSubscriptionEnabled:      "false",
+		SettingKeyPurchaseSubscriptionURL:          "",
+		SettingKeySoraClientEnabled:                "false",
+		SettingKeyCustomMenuItems:                  "[]",
+		SettingKeyDefaultConcurrency:               strconv.Itoa(s.cfg.Default.UserConcurrency),
+		SettingKeyDefaultBalance:                   strconv.FormatFloat(s.cfg.Default.UserBalance, 'f', 8, 64),
+		SettingKeyDefaultSubscriptions:             "[]",
+		SettingKeySMTPPort:                         "587",
+		SettingKeySMTPUseTLS:                       "false",
 		// Model fallback defaults
 		SettingKeyEnableModelFallback:      "false",
 		SettingKeyFallbackModelAnthropic:   "claude-3-5-sonnet-20241022",
@@ -417,6 +676,12 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpsRealtimeMonitoringEnabled: "true",
 		SettingKeyOpsQueryModeDefault:          "auto",
 		SettingKeyOpsMetricsIntervalSeconds:    "60",
+
+		// Claude Code version check (default: empty = disabled)
+		SettingKeyMinClaudeCodeVersion: "",
+
+		// 分组隔离（默认不允许未分组 Key 调度）
+		SettingKeyAllowUngroupedKeyScheduling: "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -426,32 +691,34 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 func (s *SettingService) parseSettings(settings map[string]string) *SystemSettings {
 	emailVerifyEnabled := settings[SettingKeyEmailVerifyEnabled] == "true"
 	result := &SystemSettings{
-		RegistrationEnabled:          settings[SettingKeyRegistrationEnabled] == "true",
-		EmailVerifyEnabled:           emailVerifyEnabled,
-		PromoCodeEnabled:             settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
-		PasswordResetEnabled:         emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true",
-		InvitationCodeEnabled:        settings[SettingKeyInvitationCodeEnabled] == "true",
-		TotpEnabled:                  settings[SettingKeyTotpEnabled] == "true",
-		SMTPHost:                     settings[SettingKeySMTPHost],
-		SMTPUsername:                 settings[SettingKeySMTPUsername],
-		SMTPFrom:                     settings[SettingKeySMTPFrom],
-		SMTPFromName:                 settings[SettingKeySMTPFromName],
-		SMTPUseTLS:                   settings[SettingKeySMTPUseTLS] == "true",
-		SMTPPasswordConfigured:       settings[SettingKeySMTPPassword] != "",
-		TurnstileEnabled:             settings[SettingKeyTurnstileEnabled] == "true",
-		TurnstileSiteKey:             settings[SettingKeyTurnstileSiteKey],
-		TurnstileSecretKeyConfigured: settings[SettingKeyTurnstileSecretKey] != "",
-		SiteName:                     s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
-		SiteLogo:                     settings[SettingKeySiteLogo],
-		SiteSubtitle:                 s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
-		APIBaseURL:                   settings[SettingKeyAPIBaseURL],
-		ContactInfo:                  settings[SettingKeyContactInfo],
-		DocURL:                       settings[SettingKeyDocURL],
-		HomeContent:                  settings[SettingKeyHomeContent],
-		HideCcsImportButton:          settings[SettingKeyHideCcsImportButton] == "true",
-		PurchaseSubscriptionEnabled:  settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
-		PurchaseSubscriptionURL:      strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
-		SoraClientEnabled:            settings[SettingKeySoraClientEnabled] == "true",
+		RegistrationEnabled:              settings[SettingKeyRegistrationEnabled] == "true",
+		EmailVerifyEnabled:               emailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist: ParseRegistrationEmailSuffixWhitelist(settings[SettingKeyRegistrationEmailSuffixWhitelist]),
+		PromoCodeEnabled:                 settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
+		PasswordResetEnabled:             emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true",
+		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
+		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
+		SMTPHost:                         settings[SettingKeySMTPHost],
+		SMTPUsername:                     settings[SettingKeySMTPUsername],
+		SMTPFrom:                         settings[SettingKeySMTPFrom],
+		SMTPFromName:                     settings[SettingKeySMTPFromName],
+		SMTPUseTLS:                       settings[SettingKeySMTPUseTLS] == "true",
+		SMTPPasswordConfigured:           settings[SettingKeySMTPPassword] != "",
+		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
+		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
+		TurnstileSecretKeyConfigured:     settings[SettingKeyTurnstileSecretKey] != "",
+		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
+		SiteLogo:                         settings[SettingKeySiteLogo],
+		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
+		APIBaseURL:                       settings[SettingKeyAPIBaseURL],
+		ContactInfo:                      settings[SettingKeyContactInfo],
+		DocURL:                           settings[SettingKeyDocURL],
+		HomeContent:                      settings[SettingKeyHomeContent],
+		HideCcsImportButton:              settings[SettingKeyHideCcsImportButton] == "true",
+		PurchaseSubscriptionEnabled:      settings[SettingKeyPurchaseSubscriptionEnabled] == "true",
+		PurchaseSubscriptionURL:          strings.TrimSpace(settings[SettingKeyPurchaseSubscriptionURL]),
+		SoraClientEnabled:                settings[SettingKeySoraClientEnabled] == "true",
+		CustomMenuItems:                  settings[SettingKeyCustomMenuItems],
 	}
 
 	// 解析整数类型
@@ -473,6 +740,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else {
 		result.DefaultBalance = s.cfg.Default.UserBalance
 	}
+	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 
 	// 敏感信息直接返回，方便测试连接时使用
 	result.SMTPPassword = settings[SettingKeySMTPPassword]
@@ -542,6 +810,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
+	// Claude Code version check
+	result.MinClaudeCodeVersion = settings[SettingKeyMinClaudeCodeVersion]
+
+	// 分组隔离
+	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+
 	return result
 }
 
@@ -552,6 +826,31 @@ func isFalseSettingValue(value string) bool {
 	default:
 		return false
 	}
+}
+
+func parseDefaultSubscriptions(raw string) []DefaultSubscriptionSetting {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	var items []DefaultSubscriptionSetting
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil
+	}
+
+	normalized := make([]DefaultSubscriptionSetting, 0, len(items))
+	for _, item := range items {
+		if item.GroupID <= 0 || item.ValidityDays <= 0 {
+			continue
+		}
+		if item.ValidityDays > MaxValidityDays {
+			item.ValidityDays = MaxValidityDays
+		}
+		normalized = append(normalized, item)
+	}
+
+	return normalized
 }
 
 // getStringOrDefault 获取字符串值或默认值
@@ -837,6 +1136,62 @@ func (s *SettingService) GetStreamTimeoutSettings(ctx context.Context) (*StreamT
 	}
 
 	return &settings, nil
+}
+
+// IsUngroupedKeySchedulingAllowed 查询是否允许未分组 Key 调度
+func (s *SettingService) IsUngroupedKeySchedulingAllowed(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAllowUngroupedKeyScheduling)
+	if err != nil {
+		return false // fail-closed: 查询失败时默认不允许
+	}
+	return value == "true"
+}
+
+// GetMinClaudeCodeVersion 获取最低 Claude Code 版本号要求
+// 使用进程内 atomic.Value 缓存，60 秒 TTL，热路径零锁开销
+// singleflight 防止缓存过期时 thundering herd
+// 返回空字符串表示不做版本检查
+func (s *SettingService) GetMinClaudeCodeVersion(ctx context.Context) string {
+	if cached, ok := minVersionCache.Load().(*cachedMinVersion); ok {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.value
+		}
+	}
+	// singleflight: 同一时刻只有一个 goroutine 查询 DB，其余复用结果
+	result, err, _ := minVersionSF.Do("min_version", func() (any, error) {
+		// 二次检查，避免排队的 goroutine 重复查询
+		if cached, ok := minVersionCache.Load().(*cachedMinVersion); ok {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.value, nil
+			}
+		}
+		// 使用独立 context：断开请求取消链，避免客户端断连导致空值被长期缓存
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), minVersionDBTimeout)
+		defer cancel()
+		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyMinClaudeCodeVersion)
+		if err != nil {
+			// fail-open: DB 错误时不阻塞请求，但记录日志并使用短 TTL 快速重试
+			slog.Warn("failed to get min claude code version setting, skipping version check", "error", err)
+			minVersionCache.Store(&cachedMinVersion{
+				value:     "",
+				expiresAt: time.Now().Add(minVersionErrorTTL).UnixNano(),
+			})
+			return "", nil
+		}
+		minVersionCache.Store(&cachedMinVersion{
+			value:     value,
+			expiresAt: time.Now().Add(minVersionCacheTTL).UnixNano(),
+		})
+		return value, nil
+	})
+	if err != nil {
+		return ""
+	}
+	ver, ok := result.(string)
+	if !ok {
+		return ""
+	}
+	return ver
 }
 
 // SetStreamTimeoutSettings 设置流超时处理配置

@@ -686,6 +686,27 @@
               />
               <p class="input-hint">{{ t('admin.accounts.quotaControl.rpmLimit.stickyBufferHint') }}</p>
             </div>
+
+            </div>
+          </div>
+
+        <!-- 用户消息限速模式（独立于 RPM 开关，始终可见） -->
+        <div class="mt-4">
+          <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueue') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 mb-2">
+            {{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueueHint') }}
+          </p>
+          <div class="flex space-x-2">
+            <button type="button" v-for="opt in umqModeOptions" :key="opt.value"
+              @click="userMsgQueueMode = userMsgQueueMode === opt.value ? null : opt.value"
+              :class="[
+                'px-3 py-1.5 text-sm rounded-md border transition-colors',
+                userMsgQueueMode === opt.value
+                  ? 'bg-primary-600 text-white border-primary-600'
+                  : 'bg-white dark:bg-dark-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-dark-500 hover:bg-gray-50 dark:hover:bg-dark-600'
+              ]">
+              {{ opt.label }}
+            </button>
           </div>
         </div>
       </div>
@@ -756,6 +777,17 @@
       </div>
     </template>
   </BaseDialog>
+
+  <ConfirmDialog
+    :show="showMixedChannelWarning"
+    :title="t('admin.accounts.mixedChannelWarningTitle')"
+    :message="mixedChannelWarningMessage"
+    :confirm-text="t('common.confirm')"
+    :cancel-text="t('common.cancel')"
+    :danger="true"
+    @confirm="handleMixedChannelConfirm"
+    @cancel="handleMixedChannelCancel"
+  />
 </template>
 
 <script setup lang="ts">
@@ -765,6 +797,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -844,6 +877,9 @@ const enableRpmLimit = ref(false)
 
 // State - field values
 const submitting = ref(false)
+const showMixedChannelWarning = ref(false)
+const mixedChannelWarningMessage = ref('')
+const pendingUpdatesForConfirm = ref<Record<string, unknown> | null>(null)
 const baseUrl = ref('')
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
@@ -861,6 +897,12 @@ const rpmLimitEnabled = ref(false)
 const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const bulkRpmStickyBuffer = ref<number | null>(null)
+const userMsgQueueMode = ref<string | null>(null)
+const umqModeOptions = computed(() => [
+  { value: '', label: t('admin.accounts.quotaControl.rpmLimit.umqModeOff') },
+  { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
+  { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
+])
 
 // All models list (combined Anthropic + OpenAI + Gemini)
 const allModels = [
@@ -1234,11 +1276,55 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.extra = extra
   }
 
+  // UMQ mode（独立于 RPM 保存）
+  if (userMsgQueueMode.value !== null) {
+    if (!updates.extra) updates.extra = {}
+    const umqExtra = updates.extra as Record<string, unknown>
+    umqExtra.user_msg_queue_mode = userMsgQueueMode.value  // '' = 清除账号级覆盖
+    umqExtra.user_msg_queue_enabled = false  // 清理旧字段（JSONB merge）
+  }
+
   return Object.keys(updates).length > 0 ? updates : null
 }
 
+const mixedChannelConfirmed = ref(false)
+
+// 是否需要预检查：改了分组 + 全是单一的 antigravity 或 anthropic 平台
+// 多平台混合的情况由 submitBulkUpdate 的 409 catch 兜底
+const canPreCheck = () =>
+  enableGroups.value &&
+  groupIds.value.length > 0 &&
+  props.selectedPlatforms.length === 1 &&
+  (props.selectedPlatforms[0] === 'antigravity' || props.selectedPlatforms[0] === 'anthropic')
+
 const handleClose = () => {
+  showMixedChannelWarning.value = false
+  mixedChannelWarningMessage.value = ''
+  pendingUpdatesForConfirm.value = null
+  mixedChannelConfirmed.value = false
   emit('close')
+}
+
+// 预检查：提交前调接口检测，有风险就弹窗阻止，返回 false 表示需要用户确认
+const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise<boolean> => {
+  if (!canPreCheck()) return true
+  if (mixedChannelConfirmed.value) return true
+
+  try {
+    const result = await adminAPI.accounts.checkMixedChannelRisk({
+      platform: props.selectedPlatforms[0],
+      group_ids: groupIds.value
+    })
+    if (!result.has_risk) return true
+
+    pendingUpdatesForConfirm.value = built
+    mixedChannelWarningMessage.value = result.message || t('admin.accounts.bulkEdit.failed')
+    showMixedChannelWarning.value = true
+    return false
+  } catch (error: any) {
+    appStore.showError(error.message || t('admin.accounts.bulkEdit.failed'))
+    return false
+  }
 }
 
 const handleSubmit = async () => {
@@ -1258,18 +1344,31 @@ const handleSubmit = async () => {
     enableRateMultiplier.value ||
     enableStatus.value ||
     enableGroups.value ||
-    enableRpmLimit.value
+    enableRpmLimit.value ||
+    userMsgQueueMode.value !== null
 
   if (!hasAnyFieldEnabled) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
     return
   }
 
-  const updates = buildUpdatePayload()
-  if (!updates) {
+  const built = buildUpdatePayload()
+  if (!built) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
     return
   }
+
+  const canContinue = await preCheckMixedChannelRisk(built)
+  if (!canContinue) return
+
+  await submitBulkUpdate(built)
+}
+
+const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
+  // 无论是预检查确认还是 409 兜底确认，只要 mixedChannelConfirmed 为 true 就带上 flag
+  const updates = mixedChannelConfirmed.value
+    ? { ...baseUpdates, confirm_mixed_channel_risk: true }
+    : baseUpdates
 
   submitting.value = true
 
@@ -1287,15 +1386,36 @@ const handleSubmit = async () => {
     }
 
     if (success > 0) {
+      pendingUpdatesForConfirm.value = null
       emit('updated')
       handleClose()
     }
   } catch (error: any) {
-    appStore.showError(error.response?.data?.detail || t('admin.accounts.bulkEdit.failed'))
-    console.error('Error bulk updating accounts:', error)
+    // 兜底：多平台混合场景下，预检查跳过，由后端 409 触发确认框
+    if (error.status === 409 && error.error === 'mixed_channel_warning') {
+      pendingUpdatesForConfirm.value = baseUpdates
+      mixedChannelWarningMessage.value = error.message
+      showMixedChannelWarning.value = true
+    } else {
+      appStore.showError(error.message || t('admin.accounts.bulkEdit.failed'))
+      console.error('Error bulk updating accounts:', error)
+    }
   } finally {
     submitting.value = false
   }
+}
+
+const handleMixedChannelConfirm = async () => {
+  showMixedChannelWarning.value = false
+  mixedChannelConfirmed.value = true
+  if (pendingUpdatesForConfirm.value) {
+    await submitBulkUpdate(pendingUpdatesForConfirm.value)
+  }
+}
+
+const handleMixedChannelCancel = () => {
+  showMixedChannelWarning.value = false
+  pendingUpdatesForConfirm.value = null
 }
 
 // Reset form when modal closes
@@ -1334,6 +1454,13 @@ watch(
       bulkBaseRpm.value = null
       bulkRpmStrategy.value = 'tiered'
       bulkRpmStickyBuffer.value = null
+      userMsgQueueMode.value = null
+
+      // Reset mixed channel warning state
+      showMixedChannelWarning.value = false
+      mixedChannelWarningMessage.value = ''
+      pendingUpdatesForConfirm.value = null
+      mixedChannelConfirmed.value = false
     }
   }
 )

@@ -22,6 +22,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -45,9 +46,11 @@ type GatewayHandler struct {
 	usageRecordWorkerPool     *service.UsageRecordWorkerPool
 	errorPassthroughService   *service.ErrorPassthroughService
 	concurrencyHelper         *ConcurrencyHelper
+	userMsgQueueHelper        *UserMsgQueueHelper
 	maxAccountSwitches        int
 	maxAccountSwitchesGemini  int
 	cfg                       *config.Config
+	settingService            *service.SettingService
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -62,7 +65,9 @@ func NewGatewayHandler(
 	apiKeyService *service.APIKeyService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	errorPassthroughService *service.ErrorPassthroughService,
+	userMsgQueueService *service.UserMessageQueueService,
 	cfg *config.Config,
+	settingService *service.SettingService,
 ) *GatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 10
@@ -76,6 +81,13 @@ func NewGatewayHandler(
 			maxAccountSwitchesGemini = cfg.Gateway.MaxAccountSwitchesGemini
 		}
 	}
+
+	// 初始化用户消息串行队列 helper
+	var umqHelper *UserMsgQueueHelper
+	if userMsgQueueService != nil && cfg != nil {
+		umqHelper = NewUserMsgQueueHelper(userMsgQueueService, SSEPingFormatClaude, pingInterval)
+	}
+
 	return &GatewayHandler{
 		gatewayService:            gatewayService,
 		geminiCompatService:       geminiCompatService,
@@ -87,9 +99,11 @@ func NewGatewayHandler(
 		usageRecordWorkerPool:     usageRecordWorkerPool,
 		errorPassthroughService:   errorPassthroughService,
 		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
+		userMsgQueueHelper:        umqHelper,
 		maxAccountSwitches:        maxAccountSwitches,
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,
 		cfg:                       cfg,
+		settingService:            settingService,
 	}
 }
 
@@ -154,6 +168,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
 	SetClaudeCodeClientContext(c, body, parsedReq)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
+
+	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
+	if !h.checkClaudeCodeVersion(c) {
+		return
+	}
 
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
 	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
@@ -558,6 +577,58 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
+			// ===== 用户消息串行队列 START =====
+			var queueRelease func()
+			umqMode := h.getUserMsgQueueMode(account, parsedReq)
+
+			switch umqMode {
+			case config.UMQModeSerialize:
+				// 串行模式：获取锁 + RPM 延迟 + 释放（当前行为不变）
+				baseRPM := account.GetBaseRPM()
+				release, qErr := h.userMsgQueueHelper.AcquireWithWait(
+					c, account.ID, baseRPM, reqStream, &streamStarted,
+					h.cfg.Gateway.UserMessageQueue.WaitTimeout(),
+					reqLog,
+				)
+				if qErr != nil {
+					// fail-open: 记录 warn，不阻止请求
+					reqLog.Warn("gateway.umq_acquire_failed",
+						zap.Int64("account_id", account.ID),
+						zap.Error(qErr),
+					)
+				} else {
+					queueRelease = release
+				}
+
+			case config.UMQModeThrottle:
+				// 软性限速：仅施加 RPM 自适应延迟，不阻塞并发
+				baseRPM := account.GetBaseRPM()
+				if tErr := h.userMsgQueueHelper.ThrottleWithPing(
+					c, account.ID, baseRPM, reqStream, &streamStarted,
+					h.cfg.Gateway.UserMessageQueue.WaitTimeout(),
+					reqLog,
+				); tErr != nil {
+					reqLog.Warn("gateway.umq_throttle_failed",
+						zap.Int64("account_id", account.ID),
+						zap.Error(tErr),
+					)
+				}
+
+			default:
+				if umqMode != "" {
+					reqLog.Warn("gateway.umq_unknown_mode",
+						zap.String("mode", umqMode),
+						zap.Int64("account_id", account.ID),
+					)
+				}
+			}
+
+			// 用 wrapReleaseOnDone 确保 context 取消时自动释放（仅 serialize 模式有 queueRelease）
+			queueRelease = wrapReleaseOnDone(c.Request.Context(), queueRelease)
+			// 注入回调到 ParsedRequest：使用外层 wrapper 以便提前清理 AfterFunc
+			parsedReq.OnUpstreamAccepted = queueRelease
+			// ===== 用户消息串行队列 END =====
+
 			// 转发请求 - 根据账号平台分流
 			var result *service.ForwardResult
 			requestCtx := c.Request.Context()
@@ -569,6 +640,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			} else {
 				result, err = h.gatewayService.Forward(requestCtx, c, account, parsedReq)
 			}
+
+			// 兜底释放串行锁（正常情况已通过回调提前释放）
+			if queueRelease != nil {
+				queueRelease()
+			}
+			// 清理回调引用，防止 failover 重试时旧回调被错误调用
+			parsedReq.OnUpstreamAccepted = nil
+
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
@@ -766,6 +845,10 @@ func cloneAPIKeyWithGroup(apiKey *service.APIKey, group *service.Group) *service
 
 // Usage handles getting account balance and usage statistics for CC Switch integration
 // GET /v1/usage
+//
+// Two modes:
+//   - quota_limited: API Key has quota or rate limits configured. Returns key-level limits/usage.
+//   - unrestricted:  No key-level limits. Returns subscription or wallet balance info.
 func (h *GatewayHandler) Usage(c *gin.Context) {
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -779,54 +862,183 @@ func (h *GatewayHandler) Usage(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+
+	// 解析可选的日期范围参数（用于 model_stats 查询）
+	startTime, endTime := h.parseUsageDateRange(c)
+
 	// Best-effort: 获取用量统计（按当前 API Key 过滤），失败不影响基础响应
-	var usageData gin.H
+	usageData := h.buildUsageData(ctx, apiKey.ID)
+
+	// Best-effort: 获取模型统计
+	var modelStats any
 	if h.usageService != nil {
-		dashStats, err := h.usageService.GetAPIKeyDashboardStats(c.Request.Context(), apiKey.ID)
-		if err == nil && dashStats != nil {
-			usageData = gin.H{
-				"today": gin.H{
-					"requests":              dashStats.TodayRequests,
-					"input_tokens":          dashStats.TodayInputTokens,
-					"output_tokens":         dashStats.TodayOutputTokens,
-					"cache_creation_tokens": dashStats.TodayCacheCreationTokens,
-					"cache_read_tokens":     dashStats.TodayCacheReadTokens,
-					"total_tokens":          dashStats.TodayTokens,
-					"cost":                  dashStats.TodayCost,
-					"actual_cost":           dashStats.TodayActualCost,
-				},
-				"total": gin.H{
-					"requests":              dashStats.TotalRequests,
-					"input_tokens":          dashStats.TotalInputTokens,
-					"output_tokens":         dashStats.TotalOutputTokens,
-					"cache_creation_tokens": dashStats.TotalCacheCreationTokens,
-					"cache_read_tokens":     dashStats.TotalCacheReadTokens,
-					"total_tokens":          dashStats.TotalTokens,
-					"cost":                  dashStats.TotalCost,
-					"actual_cost":           dashStats.TotalActualCost,
-				},
-				"average_duration_ms": dashStats.AverageDurationMs,
-				"rpm":                 dashStats.Rpm,
-				"tpm":                 dashStats.Tpm,
+		if stats, err := h.usageService.GetAPIKeyModelStats(ctx, apiKey.ID, startTime, endTime); err == nil && len(stats) > 0 {
+			modelStats = stats
+		}
+	}
+
+	// 判断模式: key 有总额度或速率限制 → quota_limited，否则 → unrestricted
+	isQuotaLimited := apiKey.Quota > 0 || apiKey.HasRateLimits()
+
+	if isQuotaLimited {
+		h.usageQuotaLimited(c, ctx, apiKey, usageData, modelStats)
+		return
+	}
+
+	h.usageUnrestricted(c, ctx, apiKey, subject, usageData, modelStats)
+}
+
+// parseUsageDateRange 解析 start_date / end_date query params，默认返回近 30 天范围
+func (h *GatewayHandler) parseUsageDateRange(c *gin.Context) (time.Time, time.Time) {
+	now := timezone.Now()
+	endTime := now
+	startTime := now.AddDate(0, 0, -30)
+
+	if s := c.Query("start_date"); s != "" {
+		if t, err := timezone.ParseInLocation("2006-01-02", s); err == nil {
+			startTime = t
+		}
+	}
+	if s := c.Query("end_date"); s != "" {
+		if t, err := timezone.ParseInLocation("2006-01-02", s); err == nil {
+			endTime = t.Add(24*time.Hour - time.Second) // end of day
+		}
+	}
+	return startTime, endTime
+}
+
+// buildUsageData 构建 today/total 用量摘要
+func (h *GatewayHandler) buildUsageData(ctx context.Context, apiKeyID int64) gin.H {
+	if h.usageService == nil {
+		return nil
+	}
+	dashStats, err := h.usageService.GetAPIKeyDashboardStats(ctx, apiKeyID)
+	if err != nil || dashStats == nil {
+		return nil
+	}
+	return gin.H{
+		"today": gin.H{
+			"requests":              dashStats.TodayRequests,
+			"input_tokens":          dashStats.TodayInputTokens,
+			"output_tokens":         dashStats.TodayOutputTokens,
+			"cache_creation_tokens": dashStats.TodayCacheCreationTokens,
+			"cache_read_tokens":     dashStats.TodayCacheReadTokens,
+			"total_tokens":          dashStats.TodayTokens,
+			"cost":                  dashStats.TodayCost,
+			"actual_cost":           dashStats.TodayActualCost,
+		},
+		"total": gin.H{
+			"requests":              dashStats.TotalRequests,
+			"input_tokens":          dashStats.TotalInputTokens,
+			"output_tokens":         dashStats.TotalOutputTokens,
+			"cache_creation_tokens": dashStats.TotalCacheCreationTokens,
+			"cache_read_tokens":     dashStats.TotalCacheReadTokens,
+			"total_tokens":          dashStats.TotalTokens,
+			"cost":                  dashStats.TotalCost,
+			"actual_cost":           dashStats.TotalActualCost,
+		},
+		"average_duration_ms": dashStats.AverageDurationMs,
+		"rpm":                 dashStats.Rpm,
+		"tpm":                 dashStats.Tpm,
+	}
+}
+
+// usageQuotaLimited 处理 quota_limited 模式的响应
+func (h *GatewayHandler) usageQuotaLimited(c *gin.Context, ctx context.Context, apiKey *service.APIKey, usageData gin.H, modelStats any) {
+	resp := gin.H{
+		"mode":    "quota_limited",
+		"isValid": apiKey.Status == service.StatusAPIKeyActive || apiKey.Status == service.StatusAPIKeyQuotaExhausted || apiKey.Status == service.StatusAPIKeyExpired,
+		"status":  apiKey.Status,
+	}
+
+	// 总额度信息
+	if apiKey.Quota > 0 {
+		remaining := apiKey.GetQuotaRemaining()
+		resp["quota"] = gin.H{
+			"limit":     apiKey.Quota,
+			"used":      apiKey.QuotaUsed,
+			"remaining": remaining,
+			"unit":      "USD",
+		}
+		resp["remaining"] = remaining
+		resp["unit"] = "USD"
+	}
+
+	// 速率限制信息（从 DB 获取实时用量）
+	if apiKey.HasRateLimits() && h.apiKeyService != nil {
+		rateLimitData, err := h.apiKeyService.GetRateLimitData(ctx, apiKey.ID)
+		if err == nil && rateLimitData != nil {
+			var rateLimits []gin.H
+			if apiKey.RateLimit5h > 0 {
+				used := rateLimitData.Usage5h
+				rateLimits = append(rateLimits, gin.H{
+					"window":       "5h",
+					"limit":        apiKey.RateLimit5h,
+					"used":         used,
+					"remaining":    max(0, apiKey.RateLimit5h-used),
+					"window_start": rateLimitData.Window5hStart,
+				})
+			}
+			if apiKey.RateLimit1d > 0 {
+				used := rateLimitData.Usage1d
+				rateLimits = append(rateLimits, gin.H{
+					"window":       "1d",
+					"limit":        apiKey.RateLimit1d,
+					"used":         used,
+					"remaining":    max(0, apiKey.RateLimit1d-used),
+					"window_start": rateLimitData.Window1dStart,
+				})
+			}
+			if apiKey.RateLimit7d > 0 {
+				used := rateLimitData.Usage7d
+				rateLimits = append(rateLimits, gin.H{
+					"window":       "7d",
+					"limit":        apiKey.RateLimit7d,
+					"used":         used,
+					"remaining":    max(0, apiKey.RateLimit7d-used),
+					"window_start": rateLimitData.Window7dStart,
+				})
+			}
+			if len(rateLimits) > 0 {
+				resp["rate_limits"] = rateLimits
 			}
 		}
 	}
 
-	// 订阅模式：返回订阅限额信息 + 用量统计
+	// 过期时间
+	if apiKey.ExpiresAt != nil {
+		resp["expires_at"] = apiKey.ExpiresAt
+		resp["days_until_expiry"] = apiKey.GetDaysUntilExpiry()
+	}
+
+	if usageData != nil {
+		resp["usage"] = usageData
+	}
+	if modelStats != nil {
+		resp["model_stats"] = modelStats
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// usageUnrestricted 处理 unrestricted 模式的响应（向后兼容）
+func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, usageData gin.H, modelStats any) {
+	// 订阅模式
 	if apiKey.Group != nil && apiKey.Group.IsSubscriptionType() {
-		subscription, ok := middleware2.GetSubscriptionFromContext(c)
-		if !ok {
-			h.errorResponse(c, http.StatusForbidden, "subscription_error", "No active subscription")
-			return
+		resp := gin.H{
+			"mode":     "unrestricted",
+			"isValid":  true,
+			"planName": apiKey.Group.Name,
+			"unit":     "USD",
 		}
 
-		remaining := h.calculateSubscriptionRemaining(apiKey.Group, subscription)
-		resp := gin.H{
-			"isValid":   true,
-			"planName":  apiKey.Group.Name,
-			"remaining": remaining,
-			"unit":      "USD",
-			"subscription": gin.H{
+		// 订阅信息可能不在 context 中（/v1/usage 路径跳过了中间件的计费检查）
+		subscription, ok := middleware2.GetSubscriptionFromContext(c)
+		if ok {
+			remaining := h.calculateSubscriptionRemaining(apiKey.Group, subscription)
+			resp["remaining"] = remaining
+			resp["subscription"] = gin.H{
 				"daily_usage_usd":   subscription.DailyUsageUSD,
 				"weekly_usage_usd":  subscription.WeeklyUsageUSD,
 				"monthly_usage_usd": subscription.MonthlyUsageUSD,
@@ -834,23 +1046,28 @@ func (h *GatewayHandler) Usage(c *gin.Context) {
 				"weekly_limit_usd":  apiKey.Group.WeeklyLimitUSD,
 				"monthly_limit_usd": apiKey.Group.MonthlyLimitUSD,
 				"expires_at":        subscription.ExpiresAt,
-			},
+			}
 		}
+
 		if usageData != nil {
 			resp["usage"] = usageData
+		}
+		if modelStats != nil {
+			resp["model_stats"] = modelStats
 		}
 		c.JSON(http.StatusOK, resp)
 		return
 	}
 
-	// 余额模式：返回钱包余额 + 用量统计
-	latestUser, err := h.userService.GetByID(c.Request.Context(), subject.UserID)
+	// 余额模式
+	latestUser, err := h.userService.GetByID(ctx, subject.UserID)
 	if err != nil {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to get user info")
 		return
 	}
 
 	resp := gin.H{
+		"mode":      "unrestricted",
 		"isValid":   true,
 		"planName":  "钱包余额",
 		"remaining": latestUser.Balance,
@@ -859,6 +1076,9 @@ func (h *GatewayHandler) Usage(c *gin.Context) {
 	}
 	if usageData != nil {
 		resp["usage"] = usageData
+	}
+	if modelStats != nil {
+		resp["model_stats"] = modelStats
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -1000,6 +1220,41 @@ func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarte
 		return false
 	}
 	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
+	return true
+}
+
+// checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足最低要求
+// 仅对已识别的 Claude Code 客户端执行，count_tokens 路径除外
+func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
+	ctx := c.Request.Context()
+	if !service.IsClaudeCodeClient(ctx) {
+		return true
+	}
+
+	// 排除 count_tokens 子路径
+	if strings.HasSuffix(c.Request.URL.Path, "/count_tokens") {
+		return true
+	}
+
+	minVersion := h.settingService.GetMinClaudeCodeVersion(ctx)
+	if minVersion == "" {
+		return true // 未设置，不检查
+	}
+
+	clientVersion := service.GetClaudeCodeVersion(ctx)
+	if clientVersion == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			"Unable to determine Claude Code version. Please update Claude Code: npm update -g @anthropic-ai/claude-code")
+		return false
+	}
+
+	if service.CompareVersions(clientVersion, minVersion) < 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Your Claude Code version (%s) is below the minimum required version (%s). Please update: npm update -g @anthropic-ai/claude-code",
+				clientVersion, minVersion))
+		return false
+	}
+
 	return true
 }
 
@@ -1332,6 +1587,18 @@ func billingErrorDetails(err error) (status int, code, message string) {
 		}
 		return http.StatusServiceUnavailable, "billing_service_error", msg
 	}
+	if errors.Is(err, service.ErrAPIKeyRateLimit5hExceeded) {
+		msg := pkgerrors.Message(err)
+		return http.StatusTooManyRequests, "rate_limit_exceeded", msg
+	}
+	if errors.Is(err, service.ErrAPIKeyRateLimit1dExceeded) {
+		msg := pkgerrors.Message(err)
+		return http.StatusTooManyRequests, "rate_limit_exceeded", msg
+	}
+	if errors.Is(err, service.ErrAPIKeyRateLimit7dExceeded) {
+		msg := pkgerrors.Message(err)
+		return http.StatusTooManyRequests, "rate_limit_exceeded", msg
+	}
 	msg := pkgerrors.Message(err)
 	if msg == "" {
 		logger.L().With(
@@ -1387,4 +1654,25 @@ func (h *GatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {
 		}
 	}()
 	task(ctx)
+}
+
+// getUserMsgQueueMode 获取当前请求的 UMQ 模式
+// 返回 "serialize" | "throttle" | ""
+func (h *GatewayHandler) getUserMsgQueueMode(account *service.Account, parsed *service.ParsedRequest) string {
+	if h.userMsgQueueHelper == nil {
+		return ""
+	}
+	// 仅适用于 Anthropic OAuth/SetupToken 账号
+	if !account.IsAnthropicOAuthOrSetupToken() {
+		return ""
+	}
+	if !service.IsRealUserMessage(parsed) {
+		return ""
+	}
+	// 账号级模式优先，fallback 到全局配置
+	mode := account.GetUserMsgQueueMode()
+	if mode == "" {
+		mode = h.cfg.Gateway.UserMessageQueue.GetEffectiveMode()
+	}
+	return mode
 }

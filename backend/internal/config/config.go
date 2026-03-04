@@ -30,6 +30,14 @@ const (
 // __CSP_NONCE__ will be replaced with actual nonce at request time by the SecurityHeaders middleware
 const DefaultCSPPolicy = "default-src 'self'; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https:; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
+// UMQ（用户消息队列）模式常量
+const (
+	// UMQModeSerialize: 账号级串行锁 + RPM 自适应延迟
+	UMQModeSerialize = "serialize"
+	// UMQModeThrottle: 仅 RPM 自适应前置延迟，不阻塞并发
+	UMQModeThrottle = "throttle"
+)
+
 // 连接池隔离策略常量
 // 用于控制上游 HTTP 连接池的隔离粒度，影响连接复用和资源消耗
 const (
@@ -265,8 +273,13 @@ type CSPConfig struct {
 }
 
 type ProxyFallbackConfig struct {
-	// AllowDirectOnError 当代理初始化失败时是否允许回退直连。
-	// 默认 false：避免因代理配置错误导致 IP 泄露/关联。
+	// AllowDirectOnError 当辅助服务的代理初始化失败时是否允许回退直连。
+	// 仅影响以下非 AI 账号连接的辅助服务：
+	//   - GitHub Release 更新检查
+	//   - 定价数据拉取
+	// 不影响 AI 账号网关连接（Claude/OpenAI/Gemini/Antigravity），
+	// 这些关键路径的代理失败始终返回错误，不会回退直连。
+	// 默认 false：避免因代理配置错误导致服务器真实 IP 泄露。
 	AllowDirectOnError bool `mapstructure:"allow_direct_on_error"`
 }
 
@@ -456,6 +469,52 @@ type GatewayConfig struct {
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
 	// ModelsListCacheTTLSeconds: /v1/models 模型列表短缓存 TTL（秒）
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
+
+	// UserMessageQueue: 用户消息串行队列配置
+	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
+	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// UserMessageQueueConfig 用户消息串行队列配置
+// 用于 Anthropic OAuth/SetupToken 账号的用户消息串行化发送
+type UserMessageQueueConfig struct {
+	// Mode: 模式选择
+	// "serialize" = 账号级串行锁 + RPM 自适应延迟
+	// "throttle" = 仅 RPM 自适应前置延迟，不阻塞并发
+	// "" = 禁用（默认）
+	Mode string `mapstructure:"mode"`
+	// Enabled: 已废弃，仅向后兼容（等同于 mode: "serialize"）
+	Enabled bool `mapstructure:"enabled"`
+	// LockTTLMs: 串行锁 TTL（毫秒），应大于最长请求时间
+	LockTTLMs int `mapstructure:"lock_ttl_ms"`
+	// WaitTimeoutMs: 等待获取锁的超时时间（毫秒）
+	WaitTimeoutMs int `mapstructure:"wait_timeout_ms"`
+	// MinDelayMs: RPM 自适应延迟下限（毫秒）
+	MinDelayMs int `mapstructure:"min_delay_ms"`
+	// MaxDelayMs: RPM 自适应延迟上限（毫秒）
+	MaxDelayMs int `mapstructure:"max_delay_ms"`
+	// CleanupIntervalSeconds: 孤儿锁清理间隔（秒），0 表示禁用
+	CleanupIntervalSeconds int `mapstructure:"cleanup_interval_seconds"`
+}
+
+// WaitTimeout 返回等待超时的 time.Duration
+func (c *UserMessageQueueConfig) WaitTimeout() time.Duration {
+	if c.WaitTimeoutMs <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(c.WaitTimeoutMs) * time.Millisecond
+}
+
+// GetEffectiveMode 返回生效的模式
+// 注意：Mode 字段已在 load() 中做过白名单校验和规范化，此处无需重复验证
+func (c *UserMessageQueueConfig) GetEffectiveMode() string {
+	if c.Mode == UMQModeSerialize || c.Mode == UMQModeThrottle {
+		return c.Mode
+	}
+	if c.Enabled {
+		return UMQModeSerialize // 向后兼容
+	}
+	return ""
 }
 
 // GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
@@ -819,7 +878,8 @@ type DefaultConfig struct {
 }
 
 type RateLimitConfig struct {
-	OverloadCooldownMinutes int `mapstructure:"overload_cooldown_minutes"` // 529过载冷却时间(分钟)
+	OverloadCooldownMinutes int `mapstructure:"overload_cooldown_minutes"`  // 529过载冷却时间(分钟)
+	OAuth401CooldownMinutes int `mapstructure:"oauth_401_cooldown_minutes"` // OAuth 401临时不可调度冷却(分钟)
 }
 
 // APIKeyAuthCacheConfig API Key 认证缓存配置
@@ -995,6 +1055,14 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
 
+	// Normalize UMQ mode: 白名单校验，非法值在加载时一次性 warn 并清空
+	if m := cfg.Gateway.UserMessageQueue.Mode; m != "" && m != UMQModeSerialize && m != UMQModeThrottle {
+		slog.Warn("invalid user_message_queue mode, disabling",
+			"mode", m,
+			"valid_modes", []string{UMQModeSerialize, UMQModeThrottle})
+		cfg.Gateway.UserMessageQueue.Mode = ""
+	}
+
 	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
 	if cfg.Totp.EncryptionKey == "" {
@@ -1111,6 +1179,9 @@ func setDefaults() {
 	viper.SetDefault("security.csp.policy", DefaultCSPPolicy)
 	viper.SetDefault("security.proxy_probe.insecure_skip_verify", false)
 
+	// Security - disable direct fallback on proxy error
+	viper.SetDefault("security.proxy_fallback.allow_direct_on_error", false)
+
 	// Billing
 	viper.SetDefault("billing.circuit_breaker.enabled", true)
 	viper.SetDefault("billing.circuit_breaker.failure_threshold", 5)
@@ -1162,7 +1233,7 @@ func setDefaults() {
 
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
-	viper.SetDefault("ops.use_preaggregated_tables", false)
+	viper.SetDefault("ops.use_preaggregated_tables", true)
 	viper.SetDefault("ops.cleanup.enabled", true)
 	viper.SetDefault("ops.cleanup.schedule", "0 2 * * *")
 	// Retention days: vNext defaults to 30 days across ops datasets.
@@ -1196,6 +1267,7 @@ func setDefaults() {
 
 	// RateLimit
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
+	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
 	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
 	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/c7947e9871687e664180bc971d4837f1fc2784a9/model_prices_and_context_window.json")
@@ -1376,6 +1448,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
+	// 用户消息串行队列默认值
+	viper.SetDefault("gateway.user_message_queue.enabled", false)
+	viper.SetDefault("gateway.user_message_queue.lock_ttl_ms", 120000)
+	viper.SetDefault("gateway.user_message_queue.wait_timeout_ms", 30000)
+	viper.SetDefault("gateway.user_message_queue.min_delay_ms", 200)
+	viper.SetDefault("gateway.user_message_queue.max_delay_ms", 2000)
+	viper.SetDefault("gateway.user_message_queue.cleanup_interval_seconds", 60)
+
 	viper.SetDefault("gateway.tls_fingerprint.enabled", true)
 	viper.SetDefault("concurrency.ping_interval", 10)
 
@@ -1426,9 +1506,6 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
-
-	// Security - proxy fallback
-	viper.SetDefault("security.proxy_fallback.allow_direct_on_error", false)
 
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)

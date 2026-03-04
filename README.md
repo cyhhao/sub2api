@@ -54,34 +54,7 @@ Sub2API is an AI API gateway platform designed to distribute and manage API quot
 ## Documentation
 
 - Dependency Security: `docs/dependency-security.md`
-
----
-
-## Codex CLI WebSocket v2 Example
-
-To enable OpenAI WebSocket Mode v2 in Codex CLI with Sub2API, add the following to `~/.codex/config.toml`:
-
-```toml
-model_provider = "aicodx2api"
-model = "gpt-5.3-codex"
-review_model = "gpt-5.3-codex"
-model_reasoning_effort = "xhigh"
-disable_response_storage = true
-network_access = "enabled"
-windows_wsl_setup_acknowledged = true
-
-[model_providers.aicodx2api]
-name = "aicodx2api"
-base_url = "https://api.sub2api.ai"
-wire_api = "responses"
-supports_websockets = true
-requires_openai_auth = true
-
-[features]
-responses_websockets_v2 = true
-```
-
-After updating the config, restart Codex CLI.
+- Admin Payment Integration API: `docs/ADMIN_PAYMENT_INTEGRATION_API.md`
 
 ---
 
