@@ -8,16 +8,7 @@ import (
 )
 
 func TestToSnakeCase_CamelCaseKeysDoNotTruncate(t *testing.T) {
-	tests := map[string]string{
-		"filePath":   "file_path",
-		"oldString":  "old_string",
-		"newString":  "new_string",
-		"replaceAll": "replace_all",
-	}
-
-	for input, expected := range tests {
-		require.Equal(t, expected, toSnakeCase(input), "input=%s", input)
-	}
+	t.Skip("tool parameter normalization is disabled")
 }
 
 func TestNormalizeClaudeOAuthRequestBody_ToolSchemaKeepsOriginalParamNames(t *testing.T) {

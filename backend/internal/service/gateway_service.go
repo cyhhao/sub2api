@@ -350,8 +350,6 @@ var (
 	sessionIDRegex       = regexp.MustCompile(`session_([a-f0-9-]{36})`)
 	claudeCliUserAgentRe = regexp.MustCompile(`^claude-cli/\d+\.\d+\.\d+`)
 	toolPrefixRe         = regexp.MustCompile(`(?i)^(?:oc_|mcp_)`)
-	toolNameBoundaryRe   = regexp.MustCompile(`[^a-zA-Z0-9]+`)
-	toolNameCamelRe      = regexp.MustCompile(`([a-z0-9])([A-Z])`)
 	toolNameFieldRe      = regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
 	modelFieldRe         = regexp.MustCompile(`"model"\s*:\s*"([^"]+)"`)
 
@@ -908,19 +906,6 @@ func stripToolPrefix(value string) string {
 	return toolPrefixRe.ReplaceAllString(value, "")
 }
 
-func toSnakeCase(value string) string {
-	if value == "" {
-		return value
-	}
-	// Use ${n} form to avoid Go regexp replacement ambiguity.
-	// "$1_$2" is parsed as "$1_" + "$2", which drops group 1 and causes
-	// truncation like filePath -> filpath.
-	output := toolNameCamelRe.ReplaceAllString(value, "${1}_${2}")
-	output = toolNameBoundaryRe.ReplaceAllString(output, "_")
-	output = strings.Trim(output, "_")
-	return strings.ToLower(output)
-}
-
 func normalizeToolNameForClaude(name string, cache map[string]string) string {
 	if name == "" {
 		return name
@@ -955,26 +940,6 @@ func normalizeToolNameForOpenCode(name string, cache map[string]string) string {
 	}
 	// 未知工具名保持原样，避免破坏 Anthropic 特殊工具
 	return stripped
-}
-
-func normalizeParamNameForOpenCode(name string, cache map[string]string) string {
-	if name == "" {
-		return name
-	}
-	if cache != nil {
-		if mapped, ok := cache[name]; ok {
-			return mapped
-		}
-	}
-	return name
-}
-
-func normalizeToolInputSchema(inputSchema any, cache map[string]string) {
-	// Intentionally disabled:
-	// Keep tool parameter names untouched end-to-end for compatibility tests.
-	// We still keep the function as an explicit no-op for quick rollback.
-	_ = inputSchema
-	_ = cache
 }
 
 // sanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
@@ -6451,45 +6416,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 	}
 
-}
-
-func rewriteParamKeysInValue(value any, cache map[string]string) (any, bool) {
-	switch v := value.(type) {
-	case map[string]any:
-		changed := false
-		rewritten := make(map[string]any, len(v))
-		for key, item := range v {
-			newKey := normalizeParamNameForOpenCode(key, cache)
-			newItem, childChanged := rewriteParamKeysInValue(item, cache)
-			if childChanged {
-				changed = true
-			}
-			if newKey != key {
-				changed = true
-			}
-			rewritten[newKey] = newItem
-		}
-		if !changed {
-			return value, false
-		}
-		return rewritten, true
-	case []any:
-		changed := false
-		rewritten := make([]any, len(v))
-		for idx, item := range v {
-			newItem, childChanged := rewriteParamKeysInValue(item, cache)
-			if childChanged {
-				changed = true
-			}
-			rewritten[idx] = newItem
-		}
-		if !changed {
-			return value, false
-		}
-		return rewritten, true
-	default:
-		return value, false
-	}
 }
 
 func rewriteToolNamesInValue(value any, toolNameMap map[string]string) bool {
