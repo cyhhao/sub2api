@@ -912,7 +912,10 @@ func toSnakeCase(value string) string {
 	if value == "" {
 		return value
 	}
-	output := toolNameCamelRe.ReplaceAllString(value, "$1_$2")
+	// Use ${n} form to avoid Go regexp replacement ambiguity.
+	// "$1_$2" is parsed as "$1_" + "$2", which drops group 1 and causes
+	// truncation like filePath -> filpath.
+	output := toolNameCamelRe.ReplaceAllString(value, "${1}_${2}")
 	output = toolNameBoundaryRe.ReplaceAllString(output, "_")
 	output = strings.Trim(output, "_")
 	return strings.ToLower(output)
@@ -967,41 +970,11 @@ func normalizeParamNameForOpenCode(name string, cache map[string]string) string 
 }
 
 func normalizeToolInputSchema(inputSchema any, cache map[string]string) {
-	schema, ok := inputSchema.(map[string]any)
-	if !ok {
-		return
-	}
-	properties, ok := schema["properties"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	newProperties := make(map[string]any, len(properties))
-	for key, value := range properties {
-		snakeKey := toSnakeCase(key)
-		newProperties[snakeKey] = value
-		if snakeKey != key && cache != nil {
-			cache[snakeKey] = key
-		}
-	}
-	schema["properties"] = newProperties
-
-	if required, ok := schema["required"].([]any); ok {
-		newRequired := make([]any, 0, len(required))
-		for _, item := range required {
-			name, ok := item.(string)
-			if !ok {
-				newRequired = append(newRequired, item)
-				continue
-			}
-			snakeName := toSnakeCase(name)
-			newRequired = append(newRequired, snakeName)
-			if snakeName != name && cache != nil {
-				cache[snakeName] = name
-			}
-		}
-		schema["required"] = newRequired
-	}
+	// Intentionally disabled:
+	// Keep tool parameter names untouched end-to-end for compatibility tests.
+	// We still keep the function as an explicit no-op for quick rollback.
+	_ = inputSchema
+	_ = cache
 }
 
 // sanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
@@ -1116,10 +1089,6 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 						modified = true
 					}
 				}
-				if schema, ok := toolMap["input_schema"]; ok {
-					normalizeToolInputSchema(schema, toolNameMap)
-					modified = true
-				}
 				tools[idx] = toolMap
 			}
 			req["tools"] = tools
@@ -1132,9 +1101,6 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 				}
 				if toolMap, ok := value.(map[string]any); ok {
 					toolMap["name"] = normalized
-					if schema, ok := toolMap["input_schema"]; ok {
-						normalizeToolInputSchema(schema, toolNameMap)
-					}
 					normalizedTools[normalized] = toolMap
 					continue
 				}
@@ -6213,25 +6179,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	}
 
 	transformToolInputJSON := func(raw string) string {
-		if !mimicClaudeCode {
-			return raw
-		}
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			return raw
-		}
-
-		var parsed any
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			return replaceToolNamesInText(raw, toolNameMap)
-		}
-
-		rewritten, changed := rewriteParamKeysInValue(parsed, toolNameMap)
-		if changed {
-			if bytes, err := json.Marshal(rewritten); err == nil {
-				return string(bytes)
-			}
-		}
 		return raw
 	}
 
@@ -6555,15 +6502,6 @@ func rewriteToolNamesInValue(value any, toolNameMap map[string]string) bool {
 				if mapped != name {
 					v["name"] = mapped
 					changed = true
-				}
-			}
-			if input, ok := v["input"].(map[string]any); ok {
-				rewrittenInput, inputChanged := rewriteParamKeysInValue(input, toolNameMap)
-				if inputChanged {
-					if m, ok := rewrittenInput.(map[string]any); ok {
-						v["input"] = m
-						changed = true
-					}
 				}
 			}
 		}
