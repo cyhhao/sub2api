@@ -39,6 +39,57 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 	second, ok := input[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "o1", second["id"])
+	require.Equal(t, "fc1", second["call_id"])
+}
+
+func TestApplyCodexOAuthTransform_ToolContinuationPreservesNativeMessageAndReasoningIDs(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.2",
+		"input": []any{
+			map[string]any{"type": "message", "id": "msg_0", "role": "user", "content": "hi"},
+			map[string]any{"type": "item_reference", "id": "rs_123"},
+		},
+		"tool_choice": "auto",
+	}
+
+	applyCodexOAuthTransform(reqBody, false, false)
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+
+	first, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "msg_0", first["id"])
+
+	second, ok := input[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "rs_123", second["id"])
+}
+
+func TestApplyCodexOAuthTransform_ToolContinuationNormalizesToolReferenceIDsOnly(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.2",
+		"input": []any{
+			map[string]any{"type": "item_reference", "id": "call_1"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+		},
+		"tool_choice": "auto",
+	}
+
+	applyCodexOAuthTransform(reqBody, false, false)
+
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 2)
+
+	first, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "fc1", first["id"])
+
+	second, ok := input[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "fc1", second["call_id"])
 }
 
 func TestApplyCodexOAuthTransform_ExplicitStoreFalsePreserved(t *testing.T) {
@@ -247,6 +298,50 @@ func TestApplyCodexOAuthTransform_NonCodexCLI_PreservesExistingInstructions(t *t
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
 	require.Equal(t, "old instructions", instructions)
+}
+
+func TestApplyCodexOAuthTransform_StringInputConvertedToArray(t *testing.T) {
+	reqBody := map[string]any{"model": "gpt-5.4", "input": "Hello, world!"}
+	result := applyCodexOAuthTransform(reqBody, false, false)
+	require.True(t, result.Modified)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	msg, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "message", msg["type"])
+	require.Equal(t, "user", msg["role"])
+	require.Equal(t, "Hello, world!", msg["content"])
+}
+
+func TestApplyCodexOAuthTransform_EmptyStringInputBecomesEmptyArray(t *testing.T) {
+	reqBody := map[string]any{"model": "gpt-5.4", "input": ""}
+	result := applyCodexOAuthTransform(reqBody, false, false)
+	require.True(t, result.Modified)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 0)
+}
+
+func TestApplyCodexOAuthTransform_WhitespaceStringInputBecomesEmptyArray(t *testing.T) {
+	reqBody := map[string]any{"model": "gpt-5.4", "input": "   "}
+	result := applyCodexOAuthTransform(reqBody, false, false)
+	require.True(t, result.Modified)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 0)
+}
+
+func TestApplyCodexOAuthTransform_StringInputWithToolsField(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"input": "Run the tests",
+		"tools": []any{map[string]any{"type": "function", "name": "bash"}},
+	}
+	applyCodexOAuthTransform(reqBody, false, false)
+	input, ok := reqBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
 }
 
 func TestIsInstructionsEmpty(t *testing.T) {

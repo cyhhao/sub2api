@@ -249,11 +249,12 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 		}
 	}
 
-	trend, err := h.dashboardService.GetUsageTrendWithFilters(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
+	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get usage trend")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"trend":       trend,
@@ -321,11 +322,12 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		}
 	}
 
-	stats, err := h.dashboardService.GetModelStatsWithFilters(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"models":     stats,
@@ -391,11 +393,12 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 		}
 	}
 
-	stats, err := h.dashboardService.GetGroupStatsWithFilters(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
 	if err != nil {
 		response.Error(c, 500, "Failed to get group statistics")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"groups":     stats,
@@ -416,11 +419,12 @@ func (h *DashboardHandler) GetAPIKeyUsageTrend(c *gin.Context) {
 		limit = 5
 	}
 
-	trend, err := h.dashboardService.GetAPIKeyUsageTrend(c.Request.Context(), startTime, endTime, granularity, limit)
+	trend, hit, err := h.getAPIKeyUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, limit)
 	if err != nil {
 		response.Error(c, 500, "Failed to get API key usage trend")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"trend":       trend,
@@ -442,11 +446,12 @@ func (h *DashboardHandler) GetUserUsageTrend(c *gin.Context) {
 		limit = 12
 	}
 
-	trend, err := h.dashboardService.GetUserUsageTrend(c.Request.Context(), startTime, endTime, granularity, limit)
+	trend, hit, err := h.getUserUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, limit)
 	if err != nil {
 		response.Error(c, 500, "Failed to get user usage trend")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"trend":       trend,
@@ -461,8 +466,59 @@ type BatchUsersUsageRequest struct {
 	UserIDs []int64 `json:"user_ids" binding:"required"`
 }
 
+var dashboardUsersRankingCache = newSnapshotCache(5 * time.Minute)
 var dashboardBatchUsersUsageCache = newSnapshotCache(30 * time.Second)
 var dashboardBatchAPIKeysUsageCache = newSnapshotCache(30 * time.Second)
+
+func parseRankingLimit(raw string) int {
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || limit <= 0 {
+		return 12
+	}
+	if limit > 50 {
+		return 50
+	}
+	return limit
+}
+
+// GetUserSpendingRanking handles getting user spending ranking data.
+// GET /api/v1/admin/dashboard/users-ranking
+func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
+	startTime, endTime := parseTimeRange(c)
+	limit := parseRankingLimit(c.DefaultQuery("limit", "12"))
+
+	keyRaw, _ := json.Marshal(struct {
+		Start string `json:"start"`
+		End   string `json:"end"`
+		Limit int    `json:"limit"`
+	}{
+		Start: startTime.UTC().Format(time.RFC3339),
+		End:   endTime.UTC().Format(time.RFC3339),
+		Limit: limit,
+	})
+	cacheKey := string(keyRaw)
+	if cached, ok := dashboardUsersRankingCache.Get(cacheKey); ok {
+		c.Header("X-Snapshot-Cache", "hit")
+		response.Success(c, cached.Payload)
+		return
+	}
+
+	ranking, err := h.dashboardService.GetUserSpendingRanking(c.Request.Context(), startTime, endTime, limit)
+	if err != nil {
+		response.Error(c, 500, "Failed to get user spending ranking")
+		return
+	}
+
+	payload := gin.H{
+		"ranking":           ranking.Ranking,
+		"total_actual_cost": ranking.TotalActualCost,
+		"start_date":        startTime.Format("2006-01-02"),
+		"end_date":          endTime.Add(-24 * time.Hour).Format("2006-01-02"),
+	}
+	dashboardUsersRankingCache.Set(cacheKey, payload)
+	c.Header("X-Snapshot-Cache", "miss")
+	response.Success(c, payload)
+}
 
 // GetBatchUsersUsage handles getting usage stats for multiple users
 // POST /api/v1/admin/dashboard/users-usage

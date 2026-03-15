@@ -45,15 +45,22 @@ const (
 
 // TestEvent represents a SSE event for account testing
 type TestEvent struct {
-	Type    string `json:"type"`
-	Text    string `json:"text,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Code    string `json:"code,omitempty"`
-	Data    any    `json:"data,omitempty"`
-	Success bool   `json:"success,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Code     string `json:"code,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Data     any    `json:"data,omitempty"`
+	Success  bool   `json:"success,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
+
+const (
+	defaultGeminiTextTestPrompt  = "hi"
+	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+)
 
 // AccountTestService handles account testing operations
 type AccountTestService struct {
@@ -161,7 +168,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // TestAccountConnection tests an account's connection by sending a test request
 // All account types use full Claude Code client characteristics, only auth header differs
 // modelID is optional - if empty, defaults to claude.DefaultTestModel
-func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string) error {
+func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
 	// Get account
@@ -176,11 +183,11 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	if account.IsGemini() {
-		return s.testGeminiAccountConnection(c, account, modelID)
+		return s.testGeminiAccountConnection(c, account, modelID, prompt)
 	}
 
 	if account.Platform == PlatformAntigravity {
-		return s.routeAntigravityTest(c, account, modelID)
+		return s.routeAntigravityTest(c, account, modelID, prompt)
 	}
 
 	if account.Platform == PlatformSora {
@@ -200,14 +207,14 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 		testModelID = claude.DefaultTestModel
 	}
 
-	// For API Key accounts with model mapping, map the model
+	// API Key 账号测试连接时也需要应用通配符模型映射。
 	if account.Type == "apikey" {
-		mapping := account.GetModelMapping()
-		if len(mapping) > 0 {
-			if mappedModel, exists := mapping[testModelID]; exists {
-				testModelID = mappedModel
-			}
-		}
+		testModelID = account.GetMappedModel(testModelID)
+	}
+
+	// Bedrock accounts use a separate test path
+	if account.IsBedrock() {
+		return s.testBedrockAccountConnection(c, ctx, account, testModelID)
 	}
 
 	// Determine authentication method and API URL
@@ -303,6 +310,109 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	// Process SSE stream
 	return s.processClaudeStream(c, resp.Body)
+}
+
+// testBedrockAccountConnection tests a Bedrock (SigV4 or API Key) account using non-streaming invoke
+func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+	region := bedrockRuntimeRegion(account)
+	resolvedModelID, ok := ResolveBedrockModelID(account, testModelID)
+	if !ok {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported Bedrock model: %s", testModelID))
+	}
+	testModelID = resolvedModelID
+
+	// Set SSE headers (test UI expects SSE)
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	// Create a minimal Bedrock-compatible payload (no stream, no cache_control)
+	bedrockPayload := map[string]any{
+		"anthropic_version": "bedrock-2023-05-31",
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "text",
+						"text": "hi",
+					},
+				},
+			},
+		},
+		"max_tokens":  256,
+		"temperature": 1,
+	}
+	bedrockBody, _ := json.Marshal(bedrockPayload)
+
+	// Use non-streaming endpoint (response is standard Claude JSON)
+	apiURL := BuildBedrockURL(region, testModelID, false)
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(bedrockBody))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Sign or set auth based on account type
+	if account.IsBedrockAPIKey() {
+		apiKey := account.GetCredential("api_key")
+		if apiKey == "" {
+			return s.sendErrorAndEnd(c, "No API key available")
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		signer, err := NewBedrockSignerFromAccount(account)
+		if err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to create Bedrock signer: %s", err.Error()))
+		}
+		if err := signer.SignRequest(ctx, req, bedrockBody); err != nil {
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to sign request: %s", err.Error()))
+		}
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, false)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+	}
+
+	// Bedrock non-streaming response is standard Claude JSON, extract the text
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to parse response: %s", err.Error()))
+	}
+
+	text := ""
+	if len(result.Content) > 0 {
+		text = result.Content[0].Text
+	}
+	if text == "" {
+		text = "(empty response)"
+	}
+
+	s.sendEvent(c, TestEvent{Type: "content", Text: text})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
@@ -435,7 +545,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 }
 
 // testGeminiAccountConnection tests a Gemini account's connection
-func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string) error {
+func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -462,7 +572,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	c.Writer.Flush()
 
 	// Create test payload (Gemini format)
-	payload := createGeminiTestPayload()
+	payload := createGeminiTestPayload(testModelID, prompt)
 
 	// Build request based on account type
 	var req *http.Request
@@ -1198,10 +1308,10 @@ func truncateSoraErrorBody(body []byte, max int) string {
 
 // routeAntigravityTest 路由 Antigravity 账号的测试请求。
 // APIKey 类型走原生协议（与 gateway_handler 路由一致），OAuth/Upstream 走 CRS 中转。
-func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Account, modelID string) error {
+func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Account, modelID string, prompt string) error {
 	if account.Type == AccountTypeAPIKey {
 		if strings.HasPrefix(modelID, "gemini-") {
-			return s.testGeminiAccountConnection(c, account, modelID)
+			return s.testGeminiAccountConnection(c, account, modelID, prompt)
 		}
 		return s.testClaudeAccountConnection(c, account, modelID)
 	}
@@ -1349,14 +1459,46 @@ func (s *AccountTestService) buildCodeAssistRequest(ctx context.Context, accessT
 	return req, nil
 }
 
-// createGeminiTestPayload creates a minimal test payload for Gemini API
-func createGeminiTestPayload() []byte {
+// createGeminiTestPayload creates a minimal test payload for Gemini API.
+// Image models use the image-generation path so the frontend can preview the returned image.
+func createGeminiTestPayload(modelID string, prompt string) []byte {
+	if isImageGenerationModel(modelID) {
+		imagePrompt := strings.TrimSpace(prompt)
+		if imagePrompt == "" {
+			imagePrompt = defaultGeminiImageTestPrompt
+		}
+
+		payload := map[string]any{
+			"contents": []map[string]any{
+				{
+					"role": "user",
+					"parts": []map[string]any{
+						{"text": imagePrompt},
+					},
+				},
+			},
+			"generationConfig": map[string]any{
+				"responseModalities": []string{"TEXT", "IMAGE"},
+				"imageConfig": map[string]any{
+					"aspectRatio": "1:1",
+				},
+			},
+		}
+		bytes, _ := json.Marshal(payload)
+		return bytes
+	}
+
+	textPrompt := strings.TrimSpace(prompt)
+	if textPrompt == "" {
+		textPrompt = defaultGeminiTextTestPrompt
+	}
+
 	payload := map[string]any{
 		"contents": []map[string]any{
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "hi"},
+					{"text": textPrompt},
 				},
 			},
 		},
@@ -1415,6 +1557,17 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 							if partMap, ok := part.(map[string]any); ok {
 								if text, ok := partMap["text"].(string); ok && text != "" {
 									s.sendEvent(c, TestEvent{Type: "content", Text: text})
+								}
+								if inlineData, ok := partMap["inlineData"].(map[string]any); ok {
+									mimeType, _ := inlineData["mimeType"].(string)
+									data, _ := inlineData["data"].(string)
+									if strings.HasPrefix(strings.ToLower(mimeType), "image/") && data != "" {
+										s.sendEvent(c, TestEvent{
+											Type:     "image",
+											ImageURL: fmt.Sprintf("data:%s;base64,%s", mimeType, data),
+											MimeType: mimeType,
+										})
+									}
 								}
 							}
 						}
@@ -1602,7 +1755,7 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 	ginCtx, _ := gin.CreateTestContext(w)
 	ginCtx.Request = (&http.Request{}).WithContext(ctx)
 
-	testErr := s.TestAccountConnection(ginCtx, accountID, modelID)
+	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "")
 
 	finishedAt := time.Now()
 	body := w.Body.String()

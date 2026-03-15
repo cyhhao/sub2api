@@ -97,7 +97,7 @@ type CreateAccountRequest struct {
 	Name                    string         `json:"name" binding:"required"`
 	Notes                   *string        `json:"notes"`
 	Platform                string         `json:"platform" binding:"required"`
-	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream"`
+	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock"`
 	Credentials             map[string]any `json:"credentials" binding:"required"`
 	Extra                   map[string]any `json:"extra"`
 	ProxyID                 *int64         `json:"proxy_id"`
@@ -116,7 +116,7 @@ type CreateAccountRequest struct {
 type UpdateAccountRequest struct {
 	Name                    string         `json:"name"`
 	Notes                   *string        `json:"notes"`
-	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream"`
+	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock"`
 	Credentials             map[string]any `json:"credentials"`
 	Extra                   map[string]any `json:"extra"`
 	ProxyID                 *int64         `json:"proxy_id"`
@@ -628,6 +628,7 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 // TestAccountRequest represents the request body for testing an account
 type TestAccountRequest struct {
 	ModelID string `json:"model_id"`
+	Prompt  string `json:"prompt"`
 }
 
 type SyncFromCRSRequest struct {
@@ -658,7 +659,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	// Use AccountTestService to test the account with SSE streaming
-	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID); err != nil {
+	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt); err != nil {
 		// Error already sent via SSE, just log
 		return
 	}
@@ -863,6 +864,9 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", updatedAccount.ID, invalidateErr)
 		}
 	}
+
+	// OpenAI OAuth: 刷新成功后检查并设置 privacy_mode
+	h.adminService.EnsureOpenAIPrivacy(ctx, updatedAccount)
 
 	return updatedAccount, "", nil
 }
@@ -1714,13 +1718,12 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
-		// For OAuth accounts: return default OpenAI models
-		if account.IsOAuth() {
+		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
+		if account.IsOpenAIPassthroughEnabled() {
 			response.Success(c, openai.DefaultModels)
 			return
 		}
 
-		// For API Key accounts: check model_mapping
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
 			response.Success(c, openai.DefaultModels)
