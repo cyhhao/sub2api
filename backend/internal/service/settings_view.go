@@ -6,6 +6,7 @@ type SystemSettings struct {
 	RegistrationEmailSuffixWhitelist []string
 	PromoCodeEnabled                 bool
 	PasswordResetEnabled             bool
+	FrontendURL                      string
 	InvitationCodeEnabled            bool
 	TotpEnabled                      bool // TOTP 双因素认证
 
@@ -219,6 +220,22 @@ type BetaPolicyRule struct {
 // BetaPolicySettings Beta 策略配置
 type BetaPolicySettings struct {
 	Rules []BetaPolicyRule `json:"rules"`
+}
+
+// OverloadCooldownSettings 529过载冷却配置
+type OverloadCooldownSettings struct {
+	// Enabled 是否在收到529时暂停账号调度
+	Enabled bool `json:"enabled"`
+	// CooldownMinutes 冷却时长（分钟）
+	CooldownMinutes int `json:"cooldown_minutes"`
+}
+
+// DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，10分钟）
+func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
+	return &OverloadCooldownSettings{
+		Enabled:         true,
+		CooldownMinutes: 10,
+	}
 }
 
 // DefaultBetaPolicySettings 返回默认的 Beta 策略配置

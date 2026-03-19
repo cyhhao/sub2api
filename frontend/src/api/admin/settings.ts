@@ -21,6 +21,7 @@ export interface SystemSettings {
   registration_email_suffix_whitelist: string[]
   promo_code_enabled: boolean
   password_reset_enabled: boolean
+  frontend_url: string
   invitation_code_enabled: boolean
   totp_enabled: boolean // TOTP 双因素认证
   totp_encryption_key_configured: boolean // TOTP 加密密钥是否已配置
@@ -91,6 +92,7 @@ export interface UpdateSettingsRequest {
   registration_email_suffix_whitelist?: string[]
   promo_code_enabled?: boolean
   password_reset_enabled?: boolean
+  frontend_url?: string
   invitation_code_enabled?: boolean
   totp_enabled?: boolean // TOTP 双因素认证
   default_balance?: number
@@ -239,6 +241,33 @@ export async function deleteAdminApiKey(): Promise<{ message: string }> {
   const { data } = await apiClient.delete<{ message: string }>('/admin/settings/admin-api-key')
   return data
 }
+
+// ==================== Overload Cooldown Settings ====================
+
+/**
+ * Overload cooldown settings interface (529 handling)
+ */
+export interface OverloadCooldownSettings {
+  enabled: boolean
+  cooldown_minutes: number
+}
+
+export async function getOverloadCooldownSettings(): Promise<OverloadCooldownSettings> {
+  const { data } = await apiClient.get<OverloadCooldownSettings>('/admin/settings/overload-cooldown')
+  return data
+}
+
+export async function updateOverloadCooldownSettings(
+  settings: OverloadCooldownSettings
+): Promise<OverloadCooldownSettings> {
+  const { data } = await apiClient.put<OverloadCooldownSettings>(
+    '/admin/settings/overload-cooldown',
+    settings
+  )
+  return data
+}
+
+// ==================== Stream Timeout Settings ====================
 
 /**
  * Stream timeout settings interface
@@ -497,6 +526,8 @@ export const settingsAPI = {
   getAdminApiKey,
   regenerateAdminApiKey,
   deleteAdminApiKey,
+  getOverloadCooldownSettings,
+  updateOverloadCooldownSettings,
   getStreamTimeoutSettings,
   updateStreamTimeoutSettings,
   getRectifierSettings,

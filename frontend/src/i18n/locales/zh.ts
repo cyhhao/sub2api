@@ -218,7 +218,7 @@ export default {
       email: '邮箱',
       password: '密码',
       confirmPassword: '确认密码',
-      passwordPlaceholder: '至少 6 个字符',
+      passwordPlaceholder: '至少 8 个字符',
       confirmPasswordPlaceholder: '确认密码',
       passwordMismatch: '密码不匹配'
     },
@@ -245,6 +245,7 @@ export default {
   // Common
   common: {
     loading: '加载中...',
+    justNow: '刚刚',
     save: '保存',
     cancel: '取消',
     delete: '删除',
@@ -573,7 +574,7 @@ export default {
     groupRequired: '请选择分组',
     usage: '用量',
     today: '今日',
-    total: '累计',
+    total: '近30天',
     quota: '额度',
     lastUsedAt: '上次使用时间',
     useKey: '使用密钥',
@@ -722,7 +723,17 @@ export default {
     exporting: '导出中...',
     preparingExport: '正在准备导出...',
     model: '模型',
+    requestedModel: '请求',
+    upstreamModel: '上游',
     reasoningEffort: '推理强度',
+    endpoint: '端点',
+    endpointDistribution: '端点分布',
+    inbound: '入站',
+    upstream: '上游',
+    mapping: '映射',
+    path: '路径',
+    inboundEndpoint: '入站端点',
+    upstreamEndpoint: '上游端点',
     type: '类型',
     tokens: 'Token',
     cost: '费用',
@@ -917,6 +928,7 @@ export default {
     lastWeek: '上周',
     thisMonth: '本月',
     lastMonth: '上月',
+    last24Hours: '近24小时',
     last7Days: '近 7 天',
     last14Days: '近 14 天',
     last30Days: '近 30 天',
@@ -1039,7 +1051,12 @@ export default {
         createBackup: '创建备份',
         backing: '备份中...',
         backupCreated: '备份创建成功',
-        expireDays: '过期天数'
+        expireDays: '过期天数',
+        alreadyInProgress: '已有备份正在进行中',
+        backupRunning: '备份进行中...',
+        backupFailed: '备份失败',
+        restoreRunning: '恢复进行中...',
+        restoreFailed: '恢复失败',
       },
       columns: {
         status: '状态',
@@ -1055,6 +1072,11 @@ export default {
         running: '执行中',
         completed: '已完成',
         failed: '失败'
+      },
+      progress: {
+        pending: '准备中',
+        dumping: '导出数据库',
+        uploading: '上传中',
       },
       trigger: {
         manual: '手动',
@@ -1327,7 +1349,7 @@ export default {
         actions: '操作'
       },
       today: '今日',
-      total: '累计',
+      total: '近30天',
       noSubscription: '暂无订阅',
       daysRemaining: '{days}天',
       expired: '已过期',
@@ -1542,6 +1564,8 @@ export default {
         priority: '优先级',
         apiKeys: 'API 密钥数',
         accounts: '账号数',
+        capacity: '容量',
+        usage: '用量',
         status: '状态',
         actions: '操作',
         billingType: '计费类型',
@@ -1550,6 +1574,12 @@ export default {
         userNotes: '备注',
         userStatus: '状态'
       },
+      usageToday: '今日',
+      usageTotal: '累计',
+      accountsAvailable: '可用:',
+      accountsRateLimited: '限流:',
+      accountsTotal: '总量:',
+      accountsUnit: '个账号',
       form: {
         name: '名称',
         description: '描述',
@@ -1755,6 +1785,7 @@ export default {
       revokeSubscription: '撤销订阅',
       allStatus: '全部状态',
       allGroups: '全部分组',
+      allPlatforms: '全部平台',
       daily: '每日',
       weekly: '每周',
       monthly: '每月',
@@ -1819,7 +1850,37 @@ export default {
       pleaseSelectUser: '请选择用户',
       pleaseSelectGroup: '请选择分组',
       validityDaysRequired: '请输入有效的天数（至少1天）',
-      revokeConfirm: "确定要撤销 '{user}' 的订阅吗？此操作无法撤销。"
+      revokeConfirm: "确定要撤销 '{user}' 的订阅吗？此操作无法撤销。",
+      guide: {
+        title: '订阅管理教程',
+        subtitle: '订阅模式允许你按时间周期为用户分配使用额度，支持日/周/月配额限制。按照以下步骤即可完成配置。',
+        showGuide: '使用指南',
+        step1: {
+          title: '创建订阅分组',
+          line1: '前往「分组管理」页面，点击「创建分组」',
+          line2: '将计费类型设为「订阅」，配置日/周/月额度限制',
+          line3: '保存分组，确保状态为「正常」',
+          link: '前往分组管理'
+        },
+        step2: {
+          title: '分配订阅给用户',
+          line1: '点击本页右上角「分配订阅」按钮',
+          line2: '在弹窗中搜索用户邮箱并选择目标用户',
+          line3: '选择订阅分组、设置有效期天数，点击「分配」'
+        },
+        step3: {
+          title: '管理已有订阅'
+        },
+        actions: {
+          adjust: '调整',
+          adjustDesc: '延长或缩短订阅有效期',
+          resetQuota: '重置配额',
+          resetQuotaDesc: '将日/周/月用量归零，重新开始计算',
+          revoke: '撤销',
+          revokeDesc: '立即终止该用户的订阅，不可恢复'
+        },
+        tip: '提示：订阅分组下拉列表中只会显示计费类型为「订阅」且状态为「正常」的分组。如果没有可选项，请先到分组管理中创建。'
+      }
     },
 
     // Accounts Management
@@ -1904,6 +1965,7 @@ export default {
       allTypes: '全部类型',
       allStatus: '全部状态',
       allGroups: '全部分组',
+      ungroupedGroup: '未分配分组',
       oauthType: 'OAuth',
       // Schedulable toggle
       schedulable: '参与调度',
@@ -1967,7 +2029,7 @@ export default {
       resetQuota: '重置配额',
       quotaLimit: '配额限制',
       quotaLimitPlaceholder: '0 表示不限制',
-      quotaLimitHint: '设置日/周/总使用额度（美元），任一维度达到限额后账号暂停调度。修改限额不会重置已用额度。',
+      quotaLimitHint: '设置日/周/总使用额度（美元），任一维度达到限额后账号暂停调度。Anthropic API Key 账号还可配置客户端亲和。修改限额不会重置已用额度。',
       quotaLimitToggle: '启用配额限制',
       quotaLimitToggleHint: '开启后，当账号用量达到设定额度时自动暂停调度',
       quotaDailyLimit: '日限额',
@@ -2045,6 +2107,9 @@ export default {
         rateLimitedUntil: '限流中，当前不参与调度，预计 {time} 自动恢复',
         rateLimitedAutoResume: '{time} 自动恢复',
         modelRateLimitedUntil: '{model} 限流至 {time}',
+        modelCreditOveragesUntil: '{model} 正在使用 AI Credits，至 {time}',
+        creditsExhausted: '积分已用尽',
+        creditsExhaustedUntil: 'AI Credits 已用尽，预计 {time} 恢复',
         overloadedUntil: '负载过重，重置时间：{time}',
         viewTempUnschedDetails: '查看临时不可调度详情'
       },
@@ -2098,8 +2163,10 @@ export default {
         geminiFlashDaily: 'Flash',
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
-        gemini3Image: 'GImage',
-        claude: 'Claude'
+        gemini3Image: 'G31FI',
+        claude: 'Claude',
+        passiveSampled: '被动采样',
+        activeQuery: '查询'
       },
       tier: {
         free: 'Free',
@@ -2308,7 +2375,7 @@ export default {
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: '配额控制',
-        hint: '仅适用于 Anthropic OAuth/Setup Token 账号',
+        hint: '配置费用窗口、会话限制、客户端亲和等调度控制。',
         windowCost: {
           label: '5h窗口费用控制',
           hint: '限制账号在5小时窗口内的费用使用',
@@ -2363,8 +2430,26 @@ export default {
           hint: '将所有缓存创建 token 强制按指定的 TTL 类型（5分钟或1小时）计费',
           target: '目标 TTL',
           targetHint: '选择计费使用的 TTL 类型'
+        },
+        clientAffinity: {
+          label: '客户端亲和调度',
+          hint: '启用后，新会话会优先调度到该客户端之前使用过的账号，避免频繁切换账号'
         }
       },
+      affinityNoClients: '无亲和客户端',
+      affinityClients: '{count} 个亲和客户端：',
+      affinitySection: '客户端亲和',
+      affinitySectionHint: '控制客户端在账号间的分布。通过配置区域阈值来平衡负载。',
+      affinityToggle: '启用客户端亲和',
+      affinityToggleHint: '新会话优先调度到该客户端之前使用过的账号',
+      affinityBase: '基础限额（绿区）',
+      affinityBasePlaceholder: '留空表示不限制',
+      affinityBaseHint: '绿区最大客户端数量（完整优先级调度）',
+      affinityBaseOffHint: '未开启绿区限制，所有客户端均享受完整优先级调度',
+      affinityBuffer: '缓冲区（黄区）',
+      affinityBufferPlaceholder: '例如 3',
+      affinityBufferHint: '黄区允许的额外客户端数量（降级优先级调度）',
+      affinityBufferInfinite: '不限制',
       expired: '已过期',
       proxy: '代理',
       noProxy: '无代理',
@@ -2382,6 +2467,10 @@ export default {
       mixedSchedulingHint: '启用后可参与 Anthropic/Gemini 分组的调度',
       mixedSchedulingTooltip:
         '！！注意！！ Antigravity Claude 和 Anthropic Claude 无法在同个上下文中使用，如果你同时有 Anthropic 账号和 Antigravity 账号，开启此选项会导致经常 400 报错。开启后，请用分组功能做好 Antigravity 账号和 Anthropic 账号的隔离。一定要弄明白再开启！！',
+      aiCreditsBalance: 'AI Credits',
+      allowOverages: '允许超量请求 (AI Credits)',
+      allowOveragesTooltip:
+        '仅在免费配额被明确判定为耗尽后才会使用 AI Credits。普通并发 429 限流不会切换到超量请求。',
       creating: '创建中...',
       updating: '更新中...',
       accountCreated: '账号创建成功',
@@ -4009,6 +4098,8 @@ export default {
         ignoreNoAvailableAccountsHint: '启用后，"No available accounts" 错误将不会写入错误日志（不推荐，这通常是配置问题）。',
         ignoreInvalidApiKeyErrors: '忽略无效 API Key 错误',
         ignoreInvalidApiKeyErrorsHint: '启用后，无效或缺失 API Key 的错误（INVALID_API_KEY、API_KEY_REQUIRED）将不会写入错误日志。',
+        ignoreInsufficientBalanceErrors: '忽略余额不足错误',
+        ignoreInsufficientBalanceErrorsHint: '启用后，账号余额不足（Insufficient balance）的错误将不会写入错误日志。',
         autoRefresh: '自动刷新',
         enableAutoRefresh: '启用自动刷新',
         enableAutoRefreshHint: '自动刷新仪表板数据，启用后会定期拉取最新数据。',
@@ -4133,6 +4224,9 @@ export default {
         invitationCodeHint: '开启后，用户注册时需要填写有效的邀请码',
         passwordReset: '忘记密码',
         passwordResetHint: '允许用户通过邮箱重置密码',
+        frontendUrl: '前端地址',
+        frontendUrlPlaceholder: 'https://example.com',
+        frontendUrlHint: '用于生成邮件中的密码重置链接，例如 https://example.com',
         totp: '双因素认证 (2FA)',
         totpHint: '允许用户使用 Google Authenticator 等应用进行二次验证',
         totpKeyNotConfigured:
@@ -4346,40 +4440,55 @@ export default {
         usage: '使用方法：在请求头中添加 x-api-key: <your-admin-api-key>'
       },
       soraS3: {
-        title: 'Sora S3 存储配置',
-        description: '以多配置列表方式管理 Sora S3 端点，并可切换生效配置',
+        title: 'Sora 存储配置',
+        description: '以多配置列表管理 Sora 媒体存储，支持 S3 和 Google Drive',
         newProfile: '新建配置',
         reloadProfiles: '刷新列表',
-        empty: '暂无 Sora S3 配置，请先创建',
-        createTitle: '新建 Sora S3 配置',
-        editTitle: '编辑 Sora S3 配置',
+        empty: '暂无存储配置，请先创建',
+        createTitle: '新建存储配置',
+        editTitle: '编辑存储配置',
+        selectProvider: '选择存储类型',
+        providerS3Desc: 'S3 兼容对象存储',
+        providerGDriveDesc: 'Google Drive 云盘',
         profileID: '配置 ID',
         profileName: '配置名称',
         setActive: '创建后设为生效',
         saveProfile: '保存配置',
         activateProfile: '设为生效',
-        profileCreated: 'Sora S3 配置创建成功',
-        profileSaved: 'Sora S3 配置保存成功',
-        profileDeleted: 'Sora S3 配置删除成功',
-        profileActivated: 'Sora S3 生效配置已切换',
+        profileCreated: '存储配置创建成功',
+        profileSaved: '存储配置保存成功',
+        profileDeleted: '存储配置删除成功',
+        profileActivated: '生效配置已切换',
         profileIDRequired: '请填写配置 ID',
         profileNameRequired: '请填写配置名称',
         profileSelectRequired: '请先选择配置',
         endpointRequired: '启用时必须填写 S3 端点',
         bucketRequired: '启用时必须填写存储桶',
         accessKeyRequired: '启用时必须填写 Access Key ID',
-        deleteConfirm: '确定删除 Sora S3 配置 {profileID} 吗？',
+        deleteConfirm: '确定删除存储配置 {profileID} 吗？',
         columns: {
           profile: '配置',
+          profileId: 'Profile ID',
+          name: '名称',
+          provider: '存储类型',
           active: '生效状态',
           endpoint: '端点',
-          bucket: '存储桶',
+          storagePath: '存储路径',
+          capacityUsage: '容量 / 已用',
+          capacityUnlimited: '无限制',
+          videoCount: '视频数',
+          videoCompleted: '完成',
+          videoInProgress: '进行中',
           quota: '默认配额',
           updatedAt: '更新时间',
-          actions: '操作'
+          actions: '操作',
+          rootFolder: '根目录',
+          testInTable: '测试',
+          testingInTable: '测试中...',
+          testTimeout: '测试超时（15秒）'
         },
-        enabled: '启用 S3 存储',
-        enabledHint: '启用后，Sora 生成的媒体文件将自动上传到 S3 存储',
+        enabled: '启用存储',
+        enabledHint: '启用后，Sora 生成的媒体文件将自动上传到存储',
         endpoint: 'S3 端点',
         region: '区域',
         bucket: '存储桶',
@@ -4388,16 +4497,48 @@ export default {
         secretAccessKey: 'Secret Access Key',
         secretConfigured: '(已配置，留空保持不变)',
         cdnUrl: 'CDN URL',
-        cdnUrlHint: '可选，配置后使用 CDN URL 访问文件，否则使用预签名 URL',
+        cdnUrlHint: '可选，配置后使用 CDN URL 访问文件',
         forcePathStyle: '强制路径风格（Path Style）',
         defaultQuota: '默认存储配额',
         defaultQuotaHint: '未在用户或分组级别指定配额时的默认值，0 表示无限制',
         testConnection: '测试连接',
         testing: '测试中...',
-        testSuccess: 'S3 连接测试成功',
-        testFailed: 'S3 连接测试失败',
-        saved: 'Sora S3 设置保存成功',
-        saveFailed: '保存 Sora S3 设置失败'
+        testSuccess: '连接测试成功',
+        testFailed: '连接测试失败',
+        saved: '存储设置保存成功',
+        saveFailed: '保存存储设置失败',
+        gdrive: {
+          authType: '认证方式',
+          serviceAccount: '服务账号',
+          clientId: 'Client ID',
+          clientSecret: 'Client Secret',
+          clientSecretConfigured: '(已配置，留空保持不变)',
+          refreshToken: 'Refresh Token',
+          refreshTokenConfigured: '(已配置，留空保持不变)',
+          serviceAccountJson: '服务账号 JSON',
+          serviceAccountConfigured: '(已配置，留空保持不变)',
+          folderId: 'Folder ID（可选）',
+          authorize: '授权 Google Drive',
+          authorizeHint: '通过 OAuth2 获取 Refresh Token',
+          oauthFieldsRequired: '请先填写 Client ID 和 Client Secret',
+          oauthSuccess: 'Google Drive 授权成功',
+          oauthFailed: 'Google Drive 授权失败',
+          closeWindow: '此窗口将自动关闭',
+          processing: '正在处理授权...',
+          testStorage: '测试存储',
+          testSuccess: 'Google Drive 存储测试成功（上传、访问、删除均正常）',
+          testFailed: 'Google Drive 存储测试失败'
+        }
+      },
+      overloadCooldown: {
+        title: '529 过载冷却',
+        description: '配置上游返回 529（过载）时的账号调度暂停策略',
+        enabled: '启用过载冷却',
+        enabledHint: '收到 529 错误时暂停该账号的调度，冷却后自动恢复',
+        cooldownMinutes: '冷却时长（分钟）',
+        cooldownMinutesHint: '账号暂停调度的持续时间（1-120 分钟）',
+        saved: '过载冷却设置保存成功',
+        saveFailed: '保存过载冷却设置失败'
       },
       streamTimeout: {
         title: '流超时处理',
@@ -4893,6 +5034,7 @@ export default {
     downloadLocal: '本地下载',
     canDownload: '可下载',
     regenrate: '重新生成',
+    regenerate: '重新生成',
     creatorPlaceholder: '描述你想要生成的视频或图片...',
     videoModels: '视频模型',
     imageModels: '图片模型',
@@ -4909,6 +5051,13 @@ export default {
     galleryEmptyTitle: '还没有任何作品',
     galleryEmptyDesc: '你的创作成果将会展示在这里。前往生成页，开始你的第一次创作吧。',
     startCreating: '开始创作',
-    yesterday: '昨天'
+    yesterday: '昨天',
+    landscape: '横屏',
+    portrait: '竖屏',
+    square: '方形',
+    examplePrompt1: '一只金色的柴犬在东京涩谷街头散步，镜头跟随，电影感画面，4K 高清',
+    examplePrompt2: '无人机航拍视角，冰岛极光下的冰川湖面反射绿色光芒，慢速推进',
+    examplePrompt3: '赛博朋克风格的未来城市，霓虹灯倒映在雨后积水中，夜景，电影级色彩',
+    examplePrompt4: '水墨画风格，一叶扁舟在山水间漂泊，薄雾缭绕，中国古典意境'
   }
 }

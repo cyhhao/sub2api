@@ -1,11 +1,15 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -13,27 +17,80 @@ import (
 
 // GroupHandler handles admin group management
 type GroupHandler struct {
-	adminService service.AdminService
+	adminService         service.AdminService
+	dashboardService     *service.DashboardService
+	groupCapacityService *service.GroupCapacityService
+}
+
+type optionalLimitField struct {
+	set   bool
+	value *float64
+}
+
+func (f *optionalLimitField) UnmarshalJSON(data []byte) error {
+	f.set = true
+
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		f.value = nil
+		return nil
+	}
+
+	var number float64
+	if err := json.Unmarshal(trimmed, &number); err == nil {
+		f.value = &number
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			f.value = nil
+			return nil
+		}
+		number, err = strconv.ParseFloat(text, 64)
+		if err != nil {
+			return fmt.Errorf("invalid numeric limit value %q: %w", text, err)
+		}
+		f.value = &number
+		return nil
+	}
+
+	return fmt.Errorf("invalid limit value: %s", string(trimmed))
+}
+
+func (f optionalLimitField) ToServiceInput() *float64 {
+	if !f.set {
+		return nil
+	}
+	if f.value != nil {
+		return f.value
+	}
+	zero := 0.0
+	return &zero
 }
 
 // NewGroupHandler creates a new admin group handler
-func NewGroupHandler(adminService service.AdminService) *GroupHandler {
+func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
 	return &GroupHandler{
-		adminService: adminService,
+		adminService:         adminService,
+		dashboardService:     dashboardService,
+		groupCapacityService: groupCapacityService,
 	}
 }
 
 // CreateGroupRequest represents create group request
 type CreateGroupRequest struct {
-	Name             string   `json:"name" binding:"required"`
-	Description      string   `json:"description"`
-	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
-	RateMultiplier   float64  `json:"rate_multiplier"`
-	IsExclusive      bool     `json:"is_exclusive"`
-	SubscriptionType string   `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
+	Name             string             `json:"name" binding:"required"`
+	Description      string             `json:"description"`
+	Platform         string             `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
+	RateMultiplier   float64            `json:"rate_multiplier"`
+	IsExclusive      bool               `json:"is_exclusive"`
+	SubscriptionType string             `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
+	DailyLimitUSD    optionalLimitField `json:"daily_limit_usd"`
+	WeeklyLimitUSD   optionalLimitField `json:"weekly_limit_usd"`
+	MonthlyLimitUSD  optionalLimitField `json:"monthly_limit_usd"`
 	// 图片生成计费配置（antigravity 和 gemini 平台使用，负数表示清除配置）
 	ImagePrice1K                    *float64 `json:"image_price_1k"`
 	ImagePrice2K                    *float64 `json:"image_price_2k"`
@@ -62,16 +119,16 @@ type CreateGroupRequest struct {
 
 // UpdateGroupRequest represents update group request
 type UpdateGroupRequest struct {
-	Name             string   `json:"name"`
-	Description      string   `json:"description"`
-	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
-	RateMultiplier   *float64 `json:"rate_multiplier"`
-	IsExclusive      *bool    `json:"is_exclusive"`
-	Status           string   `json:"status" binding:"omitempty,oneof=active inactive"`
-	SubscriptionType string   `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	Platform         string             `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
+	RateMultiplier   *float64           `json:"rate_multiplier"`
+	IsExclusive      *bool              `json:"is_exclusive"`
+	Status           string             `json:"status" binding:"omitempty,oneof=active inactive"`
+	SubscriptionType string             `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
+	DailyLimitUSD    optionalLimitField `json:"daily_limit_usd"`
+	WeeklyLimitUSD   optionalLimitField `json:"weekly_limit_usd"`
+	MonthlyLimitUSD  optionalLimitField `json:"monthly_limit_usd"`
 	// 图片生成计费配置（antigravity 和 gemini 平台使用，负数表示清除配置）
 	ImagePrice1K                    *float64 `json:"image_price_1k"`
 	ImagePrice2K                    *float64 `json:"image_price_2k"`
@@ -191,9 +248,9 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		RateMultiplier:                  req.RateMultiplier,
 		IsExclusive:                     req.IsExclusive,
 		SubscriptionType:                req.SubscriptionType,
-		DailyLimitUSD:                   req.DailyLimitUSD,
-		WeeklyLimitUSD:                  req.WeeklyLimitUSD,
-		MonthlyLimitUSD:                 req.MonthlyLimitUSD,
+		DailyLimitUSD:                   req.DailyLimitUSD.ToServiceInput(),
+		WeeklyLimitUSD:                  req.WeeklyLimitUSD.ToServiceInput(),
+		MonthlyLimitUSD:                 req.MonthlyLimitUSD.ToServiceInput(),
 		ImagePrice1K:                    req.ImagePrice1K,
 		ImagePrice2K:                    req.ImagePrice2K,
 		ImagePrice4K:                    req.ImagePrice4K,
@@ -244,9 +301,9 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		IsExclusive:                     req.IsExclusive,
 		Status:                          req.Status,
 		SubscriptionType:                req.SubscriptionType,
-		DailyLimitUSD:                   req.DailyLimitUSD,
-		WeeklyLimitUSD:                  req.WeeklyLimitUSD,
-		MonthlyLimitUSD:                 req.MonthlyLimitUSD,
+		DailyLimitUSD:                   req.DailyLimitUSD.ToServiceInput(),
+		WeeklyLimitUSD:                  req.WeeklyLimitUSD.ToServiceInput(),
+		MonthlyLimitUSD:                 req.MonthlyLimitUSD.ToServiceInput(),
 		ImagePrice1K:                    req.ImagePrice1K,
 		ImagePrice2K:                    req.ImagePrice2K,
 		ImagePrice4K:                    req.ImagePrice4K,
@@ -309,6 +366,33 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 		"total_cost":      0.0,
 	})
 	_ = groupID // TODO: implement actual stats
+}
+
+// GetUsageSummary returns today's and cumulative cost for all groups.
+// GET /api/v1/admin/groups/usage-summary?timezone=Asia/Shanghai
+func (h *GroupHandler) GetUsageSummary(c *gin.Context) {
+	userTZ := c.Query("timezone")
+	now := timezone.NowInUserLocation(userTZ)
+	todayStart := timezone.StartOfDayInUserLocation(now, userTZ)
+
+	results, err := h.dashboardService.GetGroupUsageSummary(c.Request.Context(), todayStart)
+	if err != nil {
+		response.Error(c, 500, "Failed to get group usage summary")
+		return
+	}
+
+	response.Success(c, results)
+}
+
+// GetCapacitySummary returns aggregated capacity (concurrency/sessions/RPM) for all active groups.
+// GET /api/v1/admin/groups/capacity-summary
+func (h *GroupHandler) GetCapacitySummary(c *gin.Context) {
+	results, err := h.groupCapacityService.GetAllGroupCapacity(c.Request.Context())
+	if err != nil {
+		response.Error(c, 500, "Failed to get group capacity summary")
+		return
+	}
+	response.Success(c, results)
 }
 
 // GetGroupAPIKeys handles getting API keys in a group

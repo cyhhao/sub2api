@@ -116,6 +116,15 @@ func (s *SettingService) GetAllSettings(ctx context.Context) (*SystemSettings, e
 	return s.parseSettings(settings), nil
 }
 
+// GetFrontendURL 获取前端基础URL（数据库优先，fallback 到配置文件）
+func (s *SettingService) GetFrontendURL(ctx context.Context) string {
+	val, err := s.settingRepo.GetValue(ctx, SettingKeyFrontendURL)
+	if err == nil && strings.TrimSpace(val) != "" {
+		return strings.TrimSpace(val)
+	}
+	return s.cfg.Server.FrontendURL
+}
+
 // GetPublicSettings 获取公开设置（无需登录）
 func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings, error) {
 	keys := []string{
@@ -401,6 +410,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	updates[SettingKeyRegistrationEmailSuffixWhitelist] = string(registrationEmailSuffixWhitelistJSON)
 	updates[SettingKeyPromoCodeEnabled] = strconv.FormatBool(settings.PromoCodeEnabled)
 	updates[SettingKeyPasswordResetEnabled] = strconv.FormatBool(settings.PasswordResetEnabled)
+	updates[SettingKeyFrontendURL] = settings.FrontendURL
 	updates[SettingKeyInvitationCodeEnabled] = strconv.FormatBool(settings.InvitationCodeEnabled)
 	updates[SettingKeyTotpEnabled] = strconv.FormatBool(settings.TotpEnabled)
 
@@ -767,6 +777,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		RegistrationEmailSuffixWhitelist: ParseRegistrationEmailSuffixWhitelist(settings[SettingKeyRegistrationEmailSuffixWhitelist]),
 		PromoCodeEnabled:                 settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
 		PasswordResetEnabled:             emailVerifyEnabled && settings[SettingKeyPasswordResetEnabled] == "true",
+		FrontendURL:                      settings[SettingKeyFrontendURL],
 		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
 		SMTPHost:                         settings[SettingKeySMTPHost],
@@ -1159,6 +1170,57 @@ func (s *SettingService) GetLinuxDoConnectOAuthConfig(ctx context.Context) (conf
 	}
 
 	return effective, nil
+}
+
+// GetOverloadCooldownSettings 获取529过载冷却配置
+func (s *SettingService) GetOverloadCooldownSettings(ctx context.Context) (*OverloadCooldownSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOverloadCooldownSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultOverloadCooldownSettings(), nil
+		}
+		return nil, fmt.Errorf("get overload cooldown settings: %w", err)
+	}
+	if value == "" {
+		return DefaultOverloadCooldownSettings(), nil
+	}
+
+	var settings OverloadCooldownSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultOverloadCooldownSettings(), nil
+	}
+
+	// 修正配置值范围
+	if settings.CooldownMinutes < 1 {
+		settings.CooldownMinutes = 1
+	}
+	if settings.CooldownMinutes > 120 {
+		settings.CooldownMinutes = 120
+	}
+
+	return &settings, nil
+}
+
+// SetOverloadCooldownSettings 设置529过载冷却配置
+func (s *SettingService) SetOverloadCooldownSettings(ctx context.Context, settings *OverloadCooldownSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+
+	// 禁用时修正为合法值即可，不拒绝请求
+	if settings.CooldownMinutes < 1 || settings.CooldownMinutes > 120 {
+		if settings.Enabled {
+			return fmt.Errorf("cooldown_minutes must be between 1-120")
+		}
+		settings.CooldownMinutes = 10 // 禁用状态下归一化为默认值
+	}
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal overload cooldown settings: %w", err)
+	}
+
+	return s.settingRepo.Set(ctx, SettingKeyOverloadCooldownSettings, string(data))
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置

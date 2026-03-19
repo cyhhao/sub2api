@@ -362,6 +362,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
+				InboundEndpoint:    GetInboundEndpoint(c),
+				UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
 				RequestPayloadHash: requestPayloadHash,
@@ -738,6 +740,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
+				InboundEndpoint:    GetInboundEndpoint(c),
+				UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
 				RequestPayloadHash: requestPayloadHash,
@@ -1235,6 +1239,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					User:               apiKey.User,
 					Account:            account,
 					Subscription:       subscription,
+					InboundEndpoint:    GetInboundEndpoint(c),
+					UpstreamEndpoint:   GetUpstreamEndpoint(c, account.Platform),
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
 					RequestPayloadHash: service.HashUsageRequestPayload(firstMessage),
@@ -1429,6 +1435,10 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		}
 	}
 
+	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
+	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
+	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
@@ -1437,6 +1447,7 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *OpenAIGatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
+	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 

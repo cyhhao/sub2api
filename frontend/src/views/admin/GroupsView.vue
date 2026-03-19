@@ -158,12 +158,51 @@
             </span>
           </template>
 
-          <template #cell-account_count="{ value }">
-            <span
-              class="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300"
-            >
-              {{ t('admin.groups.accountsCount', { count: value || 0 }) }}
-            </span>
+          <template #cell-account_count="{ row }">
+            <div class="space-y-0.5 text-xs">
+              <div>
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsAvailable') }}</span>
+                <span class="ml-1 font-medium text-emerald-600 dark:text-emerald-400">{{ (row.active_account_count || 0) - (row.rate_limited_account_count || 0) }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+              <div v-if="row.rate_limited_account_count">
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsRateLimited') }}</span>
+                <span class="ml-1 font-medium text-amber-600 dark:text-amber-400">{{ row.rate_limited_account_count }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+              <div>
+                <span class="text-gray-500 dark:text-gray-400">{{ t('admin.groups.accountsTotal') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">{{ row.account_count || 0 }}</span>
+                <span class="ml-1 inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-800 dark:bg-dark-600 dark:text-gray-300">{{ t('admin.groups.accountsUnit') }}</span>
+              </div>
+            </div>
+          </template>
+
+          <template #cell-capacity="{ row }">
+            <GroupCapacityBadge
+              v-if="capacityMap.get(row.id)"
+              :concurrency-used="capacityMap.get(row.id)!.concurrencyUsed"
+              :concurrency-max="capacityMap.get(row.id)!.concurrencyMax"
+              :sessions-used="capacityMap.get(row.id)!.sessionsUsed"
+              :sessions-max="capacityMap.get(row.id)!.sessionsMax"
+              :rpm-used="capacityMap.get(row.id)!.rpmUsed"
+              :rpm-max="capacityMap.get(row.id)!.rpmMax"
+            />
+            <span v-else class="text-xs text-gray-400">—</span>
+          </template>
+
+          <template #cell-usage="{ row }">
+            <div v-if="usageLoading" class="text-xs text-gray-400">—</div>
+            <div v-else class="space-y-0.5 text-xs">
+              <div class="text-gray-500 dark:text-gray-400">
+                <span class="text-gray-400 dark:text-gray-500">{{ t('admin.groups.usageToday') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">${{ formatCost(usageMap.get(row.id)?.today_cost ?? 0) }}</span>
+              </div>
+              <div class="text-gray-500 dark:text-gray-400">
+                <span class="text-gray-400 dark:text-gray-500">{{ t('admin.groups.usageTotal') }}</span>
+                <span class="ml-1 font-medium text-gray-700 dark:text-gray-300">${{ formatCost(usageMap.get(row.id)?.total_cost ?? 0) }}</span>
+              </div>
+            </div>
           </template>
 
           <template #cell-status="{ value }">
@@ -1812,9 +1851,11 @@ import Select from '@/components/common/Select.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import GroupRateMultipliersModal from '@/components/admin/group/GroupRateMultipliersModal.vue'
+import GroupCapacityBadge from '@/components/common/GroupCapacityBadge.vue'
 import { VueDraggable } from 'vue-draggable-plus'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
+import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -1827,6 +1868,8 @@ const columns = computed<Column[]>(() => [
   { key: 'rate_multiplier', label: t('admin.groups.columns.rateMultiplier'), sortable: true },
   { key: 'is_exclusive', label: t('admin.groups.columns.type'), sortable: true },
   { key: 'account_count', label: t('admin.groups.columns.accounts'), sortable: true },
+  { key: 'capacity', label: t('admin.groups.columns.capacity'), sortable: false },
+  { key: 'usage', label: t('admin.groups.columns.usage'), sortable: false },
   { key: 'status', label: t('admin.groups.columns.status'), sortable: true },
   { key: 'actions', label: t('admin.groups.columns.actions'), sortable: false }
 ])
@@ -1963,6 +2006,9 @@ const copyAccountsGroupOptionsForEdit = computed(() => {
 
 const groups = ref<AdminGroup[]>([])
 const loading = ref(false)
+const usageMap = ref<Map<number, { today_cost: number; total_cost: number }>>(new Map())
+const usageLoading = ref(false)
+const capacityMap = ref<Map<number, { concurrencyUsed: number; concurrencyMax: number; sessionsUsed: number; sessionsMax: number; rpmUsed: number; rpmMax: number }>>(new Map())
 const searchQuery = ref('')
 const filters = reactive({
   platform: '',
@@ -1971,7 +2017,7 @@ const filters = reactive({
 })
 const pagination = reactive({
   page: 1,
-  page_size: 20,
+  page_size: getPersistedPageSize(),
   total: 0,
   pages: 0
 })
@@ -2301,6 +2347,8 @@ const loadGroups = async () => {
     groups.value = response.items
     pagination.total = response.total
     pagination.pages = response.pages
+    loadUsageSummary()
+    loadCapacitySummary()
   } catch (error: any) {
     if (signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') {
       return
@@ -2311,6 +2359,49 @@ const loadGroups = async () => {
     if (abortController === currentController && !signal.aborted) {
       loading.value = false
     }
+  }
+}
+
+const formatCost = (cost: number): string => {
+  if (cost >= 1000) return cost.toFixed(0)
+  if (cost >= 100) return cost.toFixed(1)
+  return cost.toFixed(2)
+}
+
+const loadUsageSummary = async () => {
+  usageLoading.value = true
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const data = await adminAPI.groups.getUsageSummary(tz)
+    const map = new Map<number, { today_cost: number; total_cost: number }>()
+    for (const item of data) {
+      map.set(item.group_id, { today_cost: item.today_cost, total_cost: item.total_cost })
+    }
+    usageMap.value = map
+  } catch (error) {
+    console.error('Error loading group usage summary:', error)
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+const loadCapacitySummary = async () => {
+  try {
+    const data = await adminAPI.groups.getCapacitySummary()
+    const map = new Map<number, { concurrencyUsed: number; concurrencyMax: number; sessionsUsed: number; sessionsMax: number; rpmUsed: number; rpmMax: number }>()
+    for (const item of data) {
+      map.set(item.group_id, {
+        concurrencyUsed: item.concurrency_used,
+        concurrencyMax: item.concurrency_max,
+        sessionsUsed: item.sessions_used,
+        sessionsMax: item.sessions_max,
+        rpmUsed: item.rpm_used,
+        rpmMax: item.rpm_max
+      })
+    }
+    capacityMap.value = map
+  } catch (error) {
+    console.error('Error loading group capacity summary:', error)
   }
 }
 
@@ -2368,6 +2459,23 @@ const closeCreateModal = () => {
   createModelRoutingRules.value = []
 }
 
+const normalizeOptionalLimit = (value: number | string | null | undefined): number | null => {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return null
+    }
+    const parsed = Number(trimmed)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  }
+
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
 const handleCreateGroup = async () => {
   if (!createForm.name.trim()) {
     appStore.showError(t('admin.groups.nameRequired'))
@@ -2379,9 +2487,17 @@ const handleCreateGroup = async () => {
     const { sora_storage_quota_gb: createQuotaGb, ...createRest } = createForm
     const requestData = {
       ...createRest,
+      daily_limit_usd: normalizeOptionalLimit(createForm.daily_limit_usd as number | string | null),
+      weekly_limit_usd: normalizeOptionalLimit(createForm.weekly_limit_usd as number | string | null),
+      monthly_limit_usd: normalizeOptionalLimit(createForm.monthly_limit_usd as number | string | null),
       sora_storage_quota_bytes: createQuotaGb ? Math.round(createQuotaGb * 1024 * 1024 * 1024) : 0,
       model_routing: convertRoutingRulesToApiFormat(createModelRoutingRules.value)
     }
+    // v-model.number 清空输入框时产生 ""，转为 null 让后端设为无限制
+    const emptyToNull = (v: any) => v === '' ? null : v
+    requestData.daily_limit_usd = emptyToNull(requestData.daily_limit_usd)
+    requestData.weekly_limit_usd = emptyToNull(requestData.weekly_limit_usd)
+    requestData.monthly_limit_usd = emptyToNull(requestData.monthly_limit_usd)
     await adminAPI.groups.create(requestData)
     appStore.showSuccess(t('admin.groups.groupCreated'))
     closeCreateModal()
@@ -2457,6 +2573,9 @@ const handleUpdateGroup = async () => {
     const { sora_storage_quota_gb: editQuotaGb, ...editRest } = editForm
     const payload = {
       ...editRest,
+      daily_limit_usd: normalizeOptionalLimit(editForm.daily_limit_usd as number | string | null),
+      weekly_limit_usd: normalizeOptionalLimit(editForm.weekly_limit_usd as number | string | null),
+      monthly_limit_usd: normalizeOptionalLimit(editForm.monthly_limit_usd as number | string | null),
       sora_storage_quota_bytes: editQuotaGb ? Math.round(editQuotaGb * 1024 * 1024 * 1024) : 0,
       fallback_group_id: editForm.fallback_group_id === null ? 0 : editForm.fallback_group_id,
       fallback_group_id_on_invalid_request:
@@ -2465,6 +2584,11 @@ const handleUpdateGroup = async () => {
           : editForm.fallback_group_id_on_invalid_request,
       model_routing: convertRoutingRulesToApiFormat(editModelRoutingRules.value)
     }
+    // v-model.number 清空输入框时产生 ""，转为 null 让后端设为无限制
+    const emptyToNull = (v: any) => v === '' ? null : v
+    payload.daily_limit_usd = emptyToNull(payload.daily_limit_usd)
+    payload.weekly_limit_usd = emptyToNull(payload.weekly_limit_usd)
+    payload.monthly_limit_usd = emptyToNull(payload.monthly_limit_usd)
     await adminAPI.groups.update(editingGroup.value.id, payload)
     appStore.showSuccess(t('admin.groups.groupUpdated'))
     closeEditModal()

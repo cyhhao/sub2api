@@ -226,6 +226,41 @@ func TestOpenAIGatewayServiceRecordUsage_UsesUserSpecificGroupRate(t *testing.T)
 	require.Equal(t, 1, userRepo.deductCalls)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_IncludesEndpointMetadata(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	rateRepo := &openAIUserGroupRateRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, rateRepo)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_endpoint_metadata",
+			Usage: OpenAIUsage{
+				InputTokens:  8,
+				OutputTokens: 2,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    1002,
+			Group: &Group{RateMultiplier: 1},
+		},
+		User:             &User{ID: 2002},
+		Account:          &Account{ID: 3002},
+		InboundEndpoint:  " /v1/chat/completions ",
+		UpstreamEndpoint: " /v1/responses ",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.InboundEndpoint)
+	require.Equal(t, "/v1/chat/completions", *usageRepo.lastLog.InboundEndpoint)
+	require.NotNil(t, usageRepo.lastLog.UpstreamEndpoint)
+	require.Equal(t, "/v1/responses", *usageRepo.lastLog.UpstreamEndpoint)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultRateOnResolverError(t *testing.T) {
 	groupID := int64(12)
 	groupRate := 1.6
@@ -811,7 +846,7 @@ func TestExtractOpenAIServiceTierFromBody(t *testing.T) {
 	require.Nil(t, extractOpenAIServiceTierFromBody(nil))
 }
 
-func TestOpenAIGatewayServiceRecordUsage_UsesBillingModelAndMetadataFields(t *testing.T) {
+func TestOpenAIGatewayServiceRecordUsage_UsesRequestedModelAndUpstreamModelMetadataFields(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
 	subRepo := &openAIRecordUsageSubRepoStub{}
@@ -824,6 +859,7 @@ func TestOpenAIGatewayServiceRecordUsage_UsesBillingModelAndMetadataFields(t *te
 			RequestID:       "resp_billing_model_override",
 			BillingModel:    "gpt-5.1-codex",
 			Model:           "gpt-5.1",
+			UpstreamModel:   "gpt-5.1-codex",
 			ServiceTier:     &serviceTier,
 			ReasoningEffort: &reasoning,
 			Usage: OpenAIUsage{
@@ -842,7 +878,9 @@ func TestOpenAIGatewayServiceRecordUsage_UsesBillingModelAndMetadataFields(t *te
 
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
-	require.Equal(t, "gpt-5.1-codex", usageRepo.lastLog.Model)
+	require.Equal(t, "gpt-5.1", usageRepo.lastLog.Model)
+	require.NotNil(t, usageRepo.lastLog.UpstreamModel)
+	require.Equal(t, "gpt-5.1-codex", *usageRepo.lastLog.UpstreamModel)
 	require.NotNil(t, usageRepo.lastLog.ServiceTier)
 	require.Equal(t, serviceTier, *usageRepo.lastLog.ServiceTier)
 	require.NotNil(t, usageRepo.lastLog.ReasoningEffort)

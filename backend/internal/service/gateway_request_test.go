@@ -404,6 +404,51 @@ func TestFilterThinkingBlocksForRetry_EmptyContentGetsPlaceholder(t *testing.T) 
 	require.NotEmpty(t, content0["text"])
 }
 
+func TestFilterThinkingBlocksForRetry_StripsEmptyTextBlocks(t *testing.T) {
+	// Empty text blocks cause upstream 400: "text content blocks must be non-empty"
+	input := []byte(`{
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":""}]},
+			{"role":"assistant","content":[{"type":"text","text":""}]}
+		]
+	}`)
+
+	out := FilterThinkingBlocksForRetry(input)
+
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(out, &req))
+	msgs, ok := req["messages"].([]any)
+	require.True(t, ok)
+
+	// First message: empty text block stripped, "hello" preserved
+	msg0 := msgs[0].(map[string]any)
+	content0 := msg0["content"].([]any)
+	require.Len(t, content0, 1)
+	require.Equal(t, "hello", content0[0].(map[string]any)["text"])
+
+	// Second message: only had empty text block → gets placeholder
+	msg1 := msgs[1].(map[string]any)
+	content1 := msg1["content"].([]any)
+	require.Len(t, content1, 1)
+	block1 := content1[0].(map[string]any)
+	require.Equal(t, "text", block1["type"])
+	require.NotEmpty(t, block1["text"])
+}
+
+func TestFilterThinkingBlocksForRetry_PreservesNonEmptyTextBlocks(t *testing.T) {
+	// Non-empty text blocks should pass through unchanged
+	input := []byte(`{
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}
+		]
+	}`)
+
+	out := FilterThinkingBlocksForRetry(input)
+
+	// Fast path: no thinking content, no empty content, no empty text blocks → unchanged
+	require.Equal(t, input, out)
+}
+
 func TestFilterSignatureSensitiveBlocksForRetry_DowngradesTools(t *testing.T) {
 	input := []byte(`{
 		"thinking":{"type":"enabled","budget_tokens":1024},
@@ -969,6 +1014,76 @@ func BenchmarkParseGatewayRequest_Old_Large(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = parseGatewayRequestOld(data, "")
+	}
+}
+
+func TestParseGatewayRequest_OutputEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantEffort string
+	}{
+		{
+			name:       "output_config.effort present",
+			body:       `{"model":"claude-opus-4-6","output_config":{"effort":"medium"},"messages":[]}`,
+			wantEffort: "medium",
+		},
+		{
+			name:       "output_config.effort max",
+			body:       `{"model":"claude-opus-4-6","output_config":{"effort":"max"},"messages":[]}`,
+			wantEffort: "max",
+		},
+		{
+			name:       "output_config without effort",
+			body:       `{"model":"claude-opus-4-6","output_config":{},"messages":[]}`,
+			wantEffort: "",
+		},
+		{
+			name:       "no output_config",
+			body:       `{"model":"claude-opus-4-6","messages":[]}`,
+			wantEffort: "",
+		},
+		{
+			name:       "effort with whitespace trimmed",
+			body:       `{"model":"claude-opus-4-6","output_config":{"effort":" high "},"messages":[]}`,
+			wantEffort: "high",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := ParseGatewayRequest([]byte(tt.body), "")
+			require.NoError(t, err)
+			require.Equal(t, tt.wantEffort, parsed.OutputEffort)
+		})
+	}
+}
+
+func TestNormalizeClaudeOutputEffort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  *string
+	}{
+		{"low", strPtr("low")},
+		{"medium", strPtr("medium")},
+		{"high", strPtr("high")},
+		{"max", strPtr("max")},
+		{"LOW", strPtr("low")},
+		{"Max", strPtr("max")},
+		{" medium ", strPtr("medium")},
+		{"", nil},
+		{"unknown", nil},
+		{"xhigh", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := NormalizeClaudeOutputEffort(tt.input)
+			if tt.want == nil {
+				require.Nil(t, got)
+			} else {
+				require.NotNil(t, got)
+				require.Equal(t, *tt.want, *got)
+			}
+		})
 	}
 }
 

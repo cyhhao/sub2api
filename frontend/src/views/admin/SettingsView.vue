@@ -168,8 +168,93 @@
         </div>
         </div><!-- /Tab: Security — Admin API Key -->
 
-        <!-- Tab: Gateway — Stream Timeout -->
+        <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+
+        <!-- Overload Cooldown (529) Settings -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.overloadCooldown.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.overloadCooldown.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div v-if="overloadCooldownLoading" class="flex items-center gap-2 text-gray-500">
+              <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+              {{ t('common.loading') }}
+            </div>
+
+            <template v-else>
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t('admin.settings.overloadCooldown.enabled')
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.overloadCooldown.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="overloadCooldownForm.enabled" />
+              </div>
+
+              <div
+                v-if="overloadCooldownForm.enabled"
+                class="space-y-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.overloadCooldown.cooldownMinutes') }}
+                  </label>
+                  <input
+                    v-model.number="overloadCooldownForm.cooldown_minutes"
+                    type="number"
+                    min="1"
+                    max="120"
+                    class="input w-32"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.overloadCooldown.cooldownMinutesHint') }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                <button
+                  type="button"
+                  @click="saveOverloadCooldownSettings"
+                  :disabled="overloadCooldownSaving"
+                  class="btn btn-primary btn-sm"
+                >
+                  <svg
+                    v-if="overloadCooldownSaving"
+                    class="mr-1 h-4 w-4 animate-spin"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    ></circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    ></path>
+                  </svg>
+                  {{ overloadCooldownSaving ? t('common.saving') : t('common.save') }}
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- Stream Timeout Settings -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -653,6 +738,24 @@
               </div>
               <Toggle v-model="form.password_reset_enabled" />
             </div>
+            <!-- Frontend URL - Only show when password reset is enabled -->
+            <div
+              v-if="form.email_verify_enabled && form.password_reset_enabled"
+              class="border-t border-gray-100 pt-4 dark:border-dark-700"
+            >
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.registration.frontendUrl') }}
+              </label>
+              <input
+                v-model="form.frontend_url"
+                type="url"
+                class="input"
+                :placeholder="t('admin.settings.registration.frontendUrlPlaceholder')"
+              />
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.registration.frontendUrlHint') }}
+              </p>
+            </div>
 
             <!-- TOTP 2FA -->
             <div
@@ -1019,7 +1122,6 @@
                 type="text"
                 class="input max-w-xs font-mono text-sm"
                 :placeholder="t('admin.settings.claudeCode.minVersionPlaceholder')"
-                pattern="\d+\.\d+\.\d+"
               />
               <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.settings.claudeCode.minVersionHint') }}
@@ -1586,6 +1688,7 @@
               </div>
               <Toggle v-model="form.smtp_use_tls" />
             </div>
+
           </div>
         </div>
 
@@ -1747,6 +1850,14 @@ const adminApiKeyOperating = ref(false)
 const newAdminApiKey = ref('')
 const subscriptionGroups = ref<AdminGroup[]>([])
 
+// Overload Cooldown (529) 状态
+const overloadCooldownLoading = ref(true)
+const overloadCooldownSaving = ref(false)
+const overloadCooldownForm = reactive({
+  enabled: true,
+  cooldown_minutes: 10
+})
+
 // Stream Timeout 状态
 const streamTimeoutLoading = ref(true)
 const streamTimeoutSaving = ref(false)
@@ -1820,6 +1931,7 @@ const form = reactive<SettingsForm>({
   purchase_subscription_url: '',
   sora_client_enabled: false,
   custom_menu_items: [] as Array<{id: string; label: string; icon_svg: string; url: string; visibility: 'user' | 'admin'; sort_order: number}>,
+  frontend_url: '',
   smtp_host: '',
   smtp_port: 587,
   smtp_username: '',
@@ -2097,6 +2209,7 @@ async function saveSettings() {
       purchase_subscription_url: form.purchase_subscription_url,
       sora_client_enabled: form.sora_client_enabled,
       custom_menu_items: form.custom_menu_items,
+      frontend_url: form.frontend_url,
       smtp_host: form.smtp_host,
       smtp_port: form.smtp_port,
       smtp_username: form.smtp_username,
@@ -2254,6 +2367,37 @@ function copyNewKey() {
     })
 }
 
+// Overload Cooldown 方法
+async function loadOverloadCooldownSettings() {
+  overloadCooldownLoading.value = true
+  try {
+    const settings = await adminAPI.settings.getOverloadCooldownSettings()
+    Object.assign(overloadCooldownForm, settings)
+  } catch (error: any) {
+    console.error('Failed to load overload cooldown settings:', error)
+  } finally {
+    overloadCooldownLoading.value = false
+  }
+}
+
+async function saveOverloadCooldownSettings() {
+  overloadCooldownSaving.value = true
+  try {
+    const updated = await adminAPI.settings.updateOverloadCooldownSettings({
+      enabled: overloadCooldownForm.enabled,
+      cooldown_minutes: overloadCooldownForm.cooldown_minutes
+    })
+    Object.assign(overloadCooldownForm, updated)
+    appStore.showSuccess(t('admin.settings.overloadCooldown.saved'))
+  } catch (error: any) {
+    appStore.showError(
+      t('admin.settings.overloadCooldown.saveFailed') + ': ' + (error.message || t('common.unknownError'))
+    )
+  } finally {
+    overloadCooldownSaving.value = false
+  }
+}
+
 // Stream Timeout 方法
 async function loadStreamTimeoutSettings() {
   streamTimeoutLoading.value = true
@@ -2376,6 +2520,7 @@ onMounted(() => {
   loadSettings()
   loadSubscriptionGroups()
   loadAdminApiKey()
+  loadOverloadCooldownSettings()
   loadStreamTimeoutSettings()
   loadRectifierSettings()
   loadBetaPolicySettings()

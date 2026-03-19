@@ -403,12 +403,16 @@ export interface AdminGroup extends Group {
 
   // MCP XML 协议注入（仅 antigravity 平台使用）
   mcp_xml_inject: boolean
+  // Claude usage 模拟开关（仅 anthropic 平台使用）
+  simulate_claude_max_enabled: boolean
 
   // 支持的模型系列（仅 antigravity 平台使用）
   supported_model_scopes?: string[]
 
   // 分组下账号数量（仅管理员可见）
   account_count?: number
+  active_account_count?: number
+  rate_limited_account_count?: number
 
   // OpenAI Messages 调度配置（仅 openai 平台使用）
   default_mapped_model?: string
@@ -497,6 +501,7 @@ export interface CreateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
@@ -525,6 +530,7 @@ export interface UpdateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
   copy_accounts_from_group_ids?: number[]
 }
@@ -720,6 +726,12 @@ export interface Account {
   cache_ttl_override_enabled?: boolean | null
   cache_ttl_override_target?: string | null
 
+  // 客户端亲和调度（仅 Anthropic/Antigravity 平台有效）
+  // 启用后新会话会优先调度到客户端之前使用过的账号
+  client_affinity_enabled?: boolean | null
+  affinity_client_count?: number | null
+  affinity_clients?: string[] | null
+
   // API Key 账号配额限制
   quota_limit?: number | null
   quota_used?: number | null
@@ -769,6 +781,7 @@ export interface AntigravityModelQuota {
 }
 
 export interface AccountUsageInfo {
+  source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
@@ -780,6 +793,11 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  ai_credits?: Array<{
+    credit_type?: string
+    amount?: number
+    minimum_balance?: number
+  }> | null
   // Antigravity 403 forbidden 状态
   is_forbidden?: boolean
   forbidden_reason?: string
@@ -960,8 +978,11 @@ export interface UsageLog {
   account_id: number | null
   request_id: string
   model: string
+  upstream_model?: string | null
   service_tier?: string | null
   reasoning_effort?: string | null
+  inbound_endpoint?: string | null
+  upstream_endpoint?: string | null
 
   group_id: number | null
   subscription_id: number | null
@@ -1168,6 +1189,14 @@ export interface ModelStat {
   actual_cost: number // 实际扣除
 }
 
+export interface EndpointStat {
+  endpoint: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
+}
+
 export interface GroupStat {
   group_id: number
   group_name: string
@@ -1175,6 +1204,15 @@ export interface GroupStat {
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
+}
+
+export interface UserBreakdownItem {
+  user_id: number
+  email: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
 }
 
 export interface UserUsageTrendPoint {
@@ -1199,6 +1237,8 @@ export interface UserSpendingRankingItem {
 export interface UserSpendingRankingResponse {
   ranking: UserSpendingRankingItem[]
   total_actual_cost: number
+  total_requests: number
+  total_tokens: number
   start_date: string
   end_date: string
 }
@@ -1362,6 +1402,8 @@ export interface AccountUsageStatsResponse {
   history: AccountUsageHistory[]
   summary: AccountUsageSummary
   models: ModelStat[]
+  endpoints: EndpointStat[]
+  upstream_endpoints: EndpointStat[]
 }
 
 // ==================== User Attribute Types ====================

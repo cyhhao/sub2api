@@ -25,14 +25,35 @@
           <span class="text-sm text-gray-900 dark:text-white">{{ row.account?.name || '-' }}</span>
         </template>
 
-        <template #cell-model="{ value }">
-          <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+        <template #cell-model="{ row }">
+          <div v-if="row.upstream_model && row.upstream_model !== row.model" class="space-y-0.5 text-xs">
+            <div class="break-all font-medium text-gray-900 dark:text-white">
+              {{ row.model }}
+            </div>
+            <div class="break-all text-gray-500 dark:text-gray-400">
+              <span class="mr-0.5">↳</span>{{ row.upstream_model }}
+            </div>
+          </div>
+          <span v-else class="font-medium text-gray-900 dark:text-white">{{ row.model }}</span>
         </template>
 
         <template #cell-reasoning_effort="{ row }">
           <span class="text-sm text-gray-900 dark:text-white">
             {{ formatReasoningEffort(row.reasoning_effort) }}
           </span>
+        </template>
+
+        <template #cell-endpoint="{ row }">
+          <div class="max-w-[320px] space-y-1 text-xs">
+            <div class="break-all text-gray-700 dark:text-gray-300">
+              <span class="font-medium text-gray-500 dark:text-gray-400">{{ t('usage.inbound') }}:</span>
+              <span class="ml-1">{{ row.inbound_endpoint?.trim() || '-' }}</span>
+            </div>
+            <div class="break-all text-gray-700 dark:text-gray-300">
+              <span class="font-medium text-gray-500 dark:text-gray-400">{{ t('usage.upstream') }}:</span>
+              <span class="ml-1">{{ row.upstream_endpoint?.trim() || '-' }}</span>
+            </div>
+          </div>
         </template>
 
         <template #cell-group="{ row }">
@@ -328,6 +349,7 @@ const getRequestTypeBadgeClass = (row: AdminUsageLog): string => {
   if (requestType === 'sync') return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
   return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200'
 }
+
 const formatCacheTokens = (tokens: number): string => {
   if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`

@@ -504,6 +504,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		requestPayloadHash := service.HashUsageRequestPayload(body)
+		inboundEndpoint := GetInboundEndpoint(c)
+		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsageWithLongContext(ctx, &service.RecordUsageLongContextInput{
 				Result:                result,
@@ -511,6 +513,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				User:                  apiKey.User,
 				Account:               account,
 				Subscription:          subscription,
+				InboundEndpoint:       inboundEndpoint,
+				UpstreamEndpoint:      upstreamEndpoint,
 				UserAgent:             userAgent,
 				IPAddress:             clientIP,
 				RequestPayloadHash:    requestPayloadHash,
@@ -588,6 +592,10 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 			return
 		}
 	}
+
+	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
+	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
+	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 
 	// 使用默认的错误映射
 	status, message := mapGeminiUpstreamError(statusCode)

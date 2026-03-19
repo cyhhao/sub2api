@@ -22,6 +22,7 @@ type SystemSettings struct {
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
 	PromoCodeEnabled                 bool     `json:"promo_code_enabled"`
 	PasswordResetEnabled             bool     `json:"password_reset_enabled"`
+	FrontendURL                      string   `json:"frontend_url"`
 	InvitationCodeEnabled            bool     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool     `json:"totp_enabled"`                   // TOTP 双因素认证
 	TotpEncryptionKeyConfigured      bool     `json:"totp_encryption_key_configured"` // TOTP 加密密钥是否已配置
@@ -154,6 +155,12 @@ type SoraS3Profile struct {
 type ListSoraS3ProfilesResponse struct {
 	ActiveProfileID string          `json:"active_profile_id"`
 	Items           []SoraS3Profile `json:"items"`
+}
+
+// OverloadCooldownSettings 529过载冷却配置 DTO
+type OverloadCooldownSettings struct {
+	Enabled         bool `json:"enabled"`
+	CooldownMinutes int  `json:"cooldown_minutes"`
 }
 
 // StreamTimeoutSettings 流超时处理配置 DTO

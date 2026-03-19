@@ -218,7 +218,7 @@ export default {
       email: 'Email',
       password: 'Password',
       confirmPassword: 'Confirm Password',
-      passwordPlaceholder: 'Min 6 characters',
+      passwordPlaceholder: 'Min 8 characters',
       confirmPasswordPlaceholder: 'Confirm password',
       passwordMismatch: 'Passwords do not match'
     },
@@ -245,6 +245,7 @@ export default {
   // Common
   common: {
     loading: 'Loading...',
+    justNow: 'just now',
     save: 'Save',
     cancel: 'Cancel',
     delete: 'Delete',
@@ -573,7 +574,7 @@ export default {
     groupRequired: 'Please select a group',
     usage: 'Usage',
     today: 'Today',
-    total: 'Total',
+    total: 'Last 30d',
     quota: 'Quota',
     lastUsedAt: 'Last Used',
     useKey: 'Use Key',
@@ -717,7 +718,17 @@ export default {
     exporting: 'Exporting...',
     preparingExport: 'Preparing export...',
     model: 'Model',
+    requestedModel: 'Requested',
+    upstreamModel: 'Upstream',
     reasoningEffort: 'Reasoning Effort',
+    endpoint: 'Endpoint',
+    endpointDistribution: 'Endpoint Distribution',
+    inbound: 'Inbound',
+    upstream: 'Upstream',
+    mapping: 'Mapping',
+    path: 'Path',
+    inboundEndpoint: 'Inbound Endpoint',
+    upstreamEndpoint: 'Upstream Endpoint',
     type: 'Type',
     tokens: 'Tokens',
     cost: 'Cost',
@@ -912,6 +923,7 @@ export default {
     lastWeek: 'Last Week',
     thisMonth: 'This Month',
     lastMonth: 'Last Month',
+    last24Hours: 'Last 24 Hours',
     last7Days: 'Last 7 Days',
     last14Days: 'Last 14 Days',
     last30Days: 'Last 30 Days',
@@ -1017,7 +1029,12 @@ export default {
         createBackup: 'Create Backup',
         backing: 'Backing up...',
         backupCreated: 'Backup created successfully',
-        expireDays: 'Expire Days'
+        expireDays: 'Expire Days',
+        alreadyInProgress: 'A backup is already in progress',
+        backupRunning: 'Backup in progress...',
+        backupFailed: 'Backup failed',
+        restoreRunning: 'Restore in progress...',
+        restoreFailed: 'Restore failed',
       },
       columns: {
         status: 'Status',
@@ -1033,6 +1050,11 @@ export default {
         running: 'Running',
         completed: 'Completed',
         failed: 'Failed'
+      },
+      progress: {
+        pending: 'Preparing',
+        dumping: 'Dumping database',
+        uploading: 'Uploading',
       },
       trigger: {
         manual: 'Manual',
@@ -1300,7 +1322,7 @@ export default {
         actions: 'Actions'
       },
       today: 'Today',
-      total: 'Total',
+      total: 'Last 30d',
       noSubscription: 'No subscription',
       daysRemaining: '{days}d',
       expired: 'Expired',
@@ -1486,6 +1508,8 @@ export default {
         rateMultiplier: 'Rate Multiplier',
         type: 'Type',
         accounts: 'Accounts',
+        capacity: 'Capacity',
+        usage: 'Usage',
         status: 'Status',
         actions: 'Actions',
         billingType: 'Billing Type',
@@ -1494,6 +1518,12 @@ export default {
         userNotes: 'Notes',
         userStatus: 'Status'
       },
+      usageToday: 'Today',
+      usageTotal: 'Total',
+      accountsAvailable: 'Avail:',
+      accountsRateLimited: 'Limited:',
+      accountsTotal: 'Total:',
+      accountsUnit: '',
       rateAndAccounts: '{rate}x rate · {count} accounts',
       accountsCount: '{count} accounts',
       form: {
@@ -1648,6 +1678,14 @@ export default {
         enabled: 'Enabled',
         disabled: 'Disabled'
       },
+      claudeMaxSimulation: {
+        title: 'Claude Max Usage Simulation',
+        tooltip:
+          'When enabled, for Claude models without upstream cache-write usage, the system deterministically maps tokens to a small input plus 1h cache creation while keeping total tokens unchanged.',
+        enabled: 'Enabled (simulate 1h cache)',
+        disabled: 'Disabled',
+        hint: 'Only token categories in usage billing logs are adjusted. No per-request mapping state is persisted.'
+      },
       supportedScopes: {
         title: 'Supported Model Families',
         tooltip: 'Select the model families this group supports. Unchecked families will not be routed to this group.',
@@ -1667,6 +1705,7 @@ export default {
       revokeSubscription: 'Revoke Subscription',
       allStatus: 'All Status',
       allGroups: 'All Groups',
+      allPlatforms: 'All Platforms',
       daily: 'Daily',
       weekly: 'Weekly',
       monthly: 'Monthly',
@@ -1732,7 +1771,37 @@ export default {
       pleaseSelectGroup: 'Please select a group',
       validityDaysRequired: 'Please enter a valid number of days (at least 1)',
       revokeConfirm:
-        "Are you sure you want to revoke the subscription for '{user}'? This action cannot be undone."
+        "Are you sure you want to revoke the subscription for '{user}'? This action cannot be undone.",
+      guide: {
+        title: 'Subscription Management Guide',
+        subtitle: 'Subscription mode lets you assign time-based usage quotas to users, with daily/weekly/monthly limits. Follow these steps to get started.',
+        showGuide: 'Usage Guide',
+        step1: {
+          title: 'Create a Subscription Group',
+          line1: 'Go to "Group Management" page, click "Create Group"',
+          line2: 'Set billing type to "Subscription", configure daily/weekly/monthly quota limits',
+          line3: 'Save the group and ensure its status is "Active"',
+          link: 'Go to Group Management'
+        },
+        step2: {
+          title: 'Assign Subscription to User',
+          line1: 'Click the "Assign Subscription" button in the top right',
+          line2: 'Search for a user by email and select them',
+          line3: 'Choose a subscription group, set validity days, then click "Assign"'
+        },
+        step3: {
+          title: 'Manage Existing Subscriptions'
+        },
+        actions: {
+          adjust: 'Adjust',
+          adjustDesc: 'Extend or shorten the subscription validity period',
+          resetQuota: 'Reset Quota',
+          resetQuotaDesc: 'Reset daily/weekly/monthly usage to zero',
+          revoke: 'Revoke',
+          revokeDesc: 'Immediately terminate the subscription (irreversible)'
+        },
+        tip: 'Tip: Only groups with billing type "Subscription" and status "Active" appear in the group dropdown. If no options are available, create one in Group Management first.'
+      }
     },
 
     // Accounts
@@ -1814,6 +1883,7 @@ export default {
       allTypes: 'All Types',
       allStatus: 'All Status',
       allGroups: 'All Groups',
+      ungroupedGroup: 'Ungrouped',
       oauthType: 'OAuth',
       setupToken: 'Setup Token',
       apiKey: 'API Key',
@@ -1860,6 +1930,9 @@ export default {
         rateLimitedUntil: 'Rate limited and removed from scheduling. Auto resumes at {time}',
         rateLimitedAutoResume: 'Auto resumes in {time}',
         modelRateLimitedUntil: '{model} rate limited until {time}',
+        modelCreditOveragesUntil: '{model} using AI Credits until {time}',
+        creditsExhausted: 'Credits Exhausted',
+        creditsExhaustedUntil: 'AI Credits exhausted, expected recovery at {time}',
         overloadedUntil: 'Overloaded until {time}',
         viewTempUnschedDetails: 'View temp unschedulable details'
       },
@@ -1961,7 +2034,7 @@ export default {
       resetQuota: 'Reset Quota',
       quotaLimit: 'Quota Limit',
       quotaLimitPlaceholder: '0 means unlimited',
-      quotaLimitHint: 'Set daily/weekly/total spending limits (USD). Account will be paused when any limit is reached. Changing limits won\'t reset usage.',
+      quotaLimitHint: 'Set daily/weekly/total spending limits (USD). Anthropic API key accounts can also configure client affinity. Changing limits won\'t reset usage.',
       quotaLimitToggle: 'Enable Quota Limit',
       quotaLimitToggleHint: 'When enabled, account will be paused when usage reaches the set limit',
       quotaDailyLimit: 'Daily Limit',
@@ -2158,7 +2231,7 @@ export default {
       // Quota control (Anthropic OAuth/SetupToken only)
       quotaControl: {
         title: 'Quota Control',
-        hint: 'Only applies to Anthropic OAuth/Setup Token accounts',
+        hint: 'Configure cost window, session limits, client affinity and other scheduling controls.',
         windowCost: {
           label: '5h Window Cost Limit',
           hint: 'Limit account cost usage within the 5-hour window',
@@ -2213,8 +2286,26 @@ export default {
           hint: 'Force all cache creation tokens to be billed as the selected TTL tier (5m or 1h)',
           target: 'Target TTL',
           targetHint: 'Select the TTL tier for billing'
+        },
+        clientAffinity: {
+          label: 'Client Affinity Scheduling',
+          hint: 'When enabled, new sessions prefer accounts previously used by this client to reduce account switching'
         }
       },
+      affinityNoClients: 'No affinity clients',
+      affinityClients: '{count} affinity clients:',
+      affinitySection: 'Client Affinity',
+      affinitySectionHint: 'Control how clients are distributed across accounts. Configure zone thresholds to balance load.',
+      affinityToggle: 'Enable Client Affinity',
+      affinityToggleHint: 'New sessions prefer accounts previously used by this client',
+      affinityBase: 'Base Limit (Green Zone)',
+      affinityBasePlaceholder: 'Empty = no limit',
+      affinityBaseHint: 'Max clients in green zone (full priority scheduling)',
+      affinityBaseOffHint: 'No green zone limit. All clients receive full priority scheduling.',
+      affinityBuffer: 'Buffer (Yellow Zone)',
+      affinityBufferPlaceholder: 'e.g. 3',
+      affinityBufferHint: 'Additional clients allowed in the yellow zone (degraded priority)',
+      affinityBufferInfinite: 'Unlimited',
       expired: 'Expired',
       proxy: 'Proxy',
       noProxy: 'No Proxy',
@@ -2232,6 +2323,10 @@ export default {
       mixedSchedulingHint: 'Enable to participate in Anthropic/Gemini group scheduling',
       mixedSchedulingTooltip:
         '!! WARNING !! Antigravity Claude and Anthropic Claude cannot be used in the same context. If you have both Anthropic and Antigravity accounts, enabling this option will cause frequent 400 errors. When enabled, please use the group feature to isolate Antigravity accounts from Anthropic accounts. Make sure you understand this before enabling!!',
+      aiCreditsBalance: 'AI Credits',
+      allowOverages: 'Allow Overages (AI Credits)',
+      allowOveragesTooltip:
+        'Only use AI Credits after free quota is explicitly exhausted. Ordinary concurrent 429 rate limits will not switch to overages.',
       creating: 'Creating...',
       updating: 'Updating...',
       accountCreated: 'Account created successfully',
@@ -2665,8 +2760,10 @@ export default {
         geminiFlashDaily: 'Flash',
         gemini3Pro: 'G3P',
         gemini3Flash: 'G3F',
-        gemini3Image: 'GImage',
-        claude: 'Claude'
+        gemini3Image: 'G31FI',
+        claude: 'Claude',
+        passiveSampled: 'Passive',
+        activeQuery: 'Query'
       },
       tier: {
         free: 'Free',
@@ -3835,6 +3932,8 @@ export default {
         ignoreNoAvailableAccountsHint: 'When enabled, "No available accounts" errors will not be written to the error log (not recommended; usually a config issue).',
         ignoreInvalidApiKeyErrors: 'Ignore invalid API key errors',
         ignoreInvalidApiKeyErrorsHint: 'When enabled, invalid or missing API key errors (INVALID_API_KEY, API_KEY_REQUIRED) will not be written to the error log.',
+        ignoreInsufficientBalanceErrors: 'Ignore Insufficient Balance Errors',
+        ignoreInsufficientBalanceErrorsHint: 'When enabled, insufficient account balance errors will not be written to the error log.',
         autoRefresh: 'Auto Refresh',
         enableAutoRefresh: 'Enable auto refresh',
         enableAutoRefreshHint: 'Automatically refresh dashboard data at a fixed interval.',
@@ -3959,6 +4058,9 @@ export default {
         invitationCodeHint: 'When enabled, users must enter a valid invitation code to register',
         passwordReset: 'Password Reset',
         passwordResetHint: 'Allow users to reset their password via email',
+        frontendUrl: 'Frontend URL',
+        frontendUrlPlaceholder: 'https://example.com',
+        frontendUrlHint: 'Used to generate password reset links in emails. Example: https://example.com',
         totp: 'Two-Factor Authentication (2FA)',
         totpHint: 'Allow users to use authenticator apps like Google Authenticator',
         totpKeyNotConfigured:
@@ -4173,40 +4275,55 @@ export default {
         usage: 'Usage: Add to request header - x-api-key: <your-admin-api-key>'
       },
       soraS3: {
-        title: 'Sora S3 Storage',
-        description: 'Manage multiple Sora S3 endpoints and switch the active profile',
+        title: 'Sora Storage',
+        description: 'Manage Sora media storage profiles with S3 and Google Drive support',
         newProfile: 'New Profile',
         reloadProfiles: 'Reload Profiles',
-        empty: 'No Sora S3 profiles yet, create one first',
-        createTitle: 'Create Sora S3 Profile',
-        editTitle: 'Edit Sora S3 Profile',
+        empty: 'No storage profiles yet, create one first',
+        createTitle: 'Create Storage Profile',
+        editTitle: 'Edit Storage Profile',
+        selectProvider: 'Select Storage Type',
+        providerS3Desc: 'S3-compatible object storage',
+        providerGDriveDesc: 'Google Drive cloud storage',
         profileID: 'Profile ID',
         profileName: 'Profile Name',
         setActive: 'Set as active after creation',
         saveProfile: 'Save Profile',
         activateProfile: 'Activate',
-        profileCreated: 'Sora S3 profile created',
-        profileSaved: 'Sora S3 profile saved',
-        profileDeleted: 'Sora S3 profile deleted',
-        profileActivated: 'Sora S3 active profile switched',
+        profileCreated: 'Storage profile created',
+        profileSaved: 'Storage profile saved',
+        profileDeleted: 'Storage profile deleted',
+        profileActivated: 'Active storage profile switched',
         profileIDRequired: 'Profile ID is required',
         profileNameRequired: 'Profile name is required',
         profileSelectRequired: 'Please select a profile first',
         endpointRequired: 'S3 endpoint is required when enabled',
         bucketRequired: 'Bucket is required when enabled',
         accessKeyRequired: 'Access Key ID is required when enabled',
-        deleteConfirm: 'Delete Sora S3 profile {profileID}?',
+        deleteConfirm: 'Delete storage profile {profileID}?',
         columns: {
           profile: 'Profile',
+          profileId: 'Profile ID',
+          name: 'Name',
+          provider: 'Type',
           active: 'Active',
           endpoint: 'Endpoint',
-          bucket: 'Bucket',
+          storagePath: 'Storage Path',
+          capacityUsage: 'Capacity / Used',
+          capacityUnlimited: 'Unlimited',
+          videoCount: 'Videos',
+          videoCompleted: 'completed',
+          videoInProgress: 'in progress',
           quota: 'Default Quota',
           updatedAt: 'Updated At',
-          actions: 'Actions'
+          actions: 'Actions',
+          rootFolder: 'Root folder',
+          testInTable: 'Test',
+          testingInTable: 'Testing...',
+          testTimeout: 'Test timed out (15s)'
         },
-        enabled: 'Enable S3 Storage',
-        enabledHint: 'When enabled, Sora generated media files will be automatically uploaded to S3 storage',
+        enabled: 'Enable Storage',
+        enabledHint: 'When enabled, Sora generated media files will be automatically uploaded',
         endpoint: 'S3 Endpoint',
         region: 'Region',
         bucket: 'Bucket',
@@ -4215,16 +4332,48 @@ export default {
         secretAccessKey: 'Secret Access Key',
         secretConfigured: '(Configured, leave blank to keep)',
         cdnUrl: 'CDN URL',
-        cdnUrlHint: 'Optional. When configured, files are accessed via CDN URL instead of presigned URLs',
+        cdnUrlHint: 'Optional. When configured, files are accessed via CDN URL',
         forcePathStyle: 'Force Path Style',
         defaultQuota: 'Default Storage Quota',
         defaultQuotaHint: 'Default quota when not specified at user or group level. 0 means unlimited',
         testConnection: 'Test Connection',
         testing: 'Testing...',
-        testSuccess: 'S3 connection test successful',
-        testFailed: 'S3 connection test failed',
-        saved: 'Sora S3 settings saved successfully',
-        saveFailed: 'Failed to save Sora S3 settings'
+        testSuccess: 'Connection test successful',
+        testFailed: 'Connection test failed',
+        saved: 'Storage settings saved successfully',
+        saveFailed: 'Failed to save storage settings',
+        gdrive: {
+          authType: 'Authentication Method',
+          serviceAccount: 'Service Account',
+          clientId: 'Client ID',
+          clientSecret: 'Client Secret',
+          clientSecretConfigured: '(Configured, leave blank to keep)',
+          refreshToken: 'Refresh Token',
+          refreshTokenConfigured: '(Configured, leave blank to keep)',
+          serviceAccountJson: 'Service Account JSON',
+          serviceAccountConfigured: '(Configured, leave blank to keep)',
+          folderId: 'Folder ID (optional)',
+          authorize: 'Authorize Google Drive',
+          authorizeHint: 'Get Refresh Token via OAuth2',
+          oauthFieldsRequired: 'Please fill in Client ID and Client Secret first',
+          oauthSuccess: 'Google Drive authorization successful',
+          oauthFailed: 'Google Drive authorization failed',
+          closeWindow: 'This window will close automatically',
+          processing: 'Processing authorization...',
+          testStorage: 'Test Storage',
+          testSuccess: 'Google Drive storage test passed (upload, access, delete all OK)',
+          testFailed: 'Google Drive storage test failed'
+        }
+      },
+      overloadCooldown: {
+        title: '529 Overload Cooldown',
+        description: 'Configure account scheduling pause strategy when upstream returns 529 (overloaded)',
+        enabled: 'Enable Overload Cooldown',
+        enabledHint: 'Pause account scheduling on 529 errors, auto-recover after cooldown',
+        cooldownMinutes: 'Cooldown Duration (minutes)',
+        cooldownMinutesHint: 'Duration to pause account scheduling (1-120 minutes)',
+        saved: 'Overload cooldown settings saved',
+        saveFailed: 'Failed to save overload cooldown settings'
       },
       streamTimeout: {
         title: 'Stream Timeout Handling',
@@ -4695,6 +4844,7 @@ export default {
     downloadLocal: 'Download',
     canDownload: 'to download',
     regenrate: 'Regenerate',
+    regenerate: 'Regenerate',
     creatorPlaceholder: 'Describe the video or image you want to create...',
     videoModels: 'Video Models',
     imageModels: 'Image Models',
@@ -4711,6 +4861,13 @@ export default {
     galleryEmptyTitle: 'No works yet',
     galleryEmptyDesc: 'Your creations will be displayed here. Go to the generate page to start your first creation.',
     startCreating: 'Start Creating',
-    yesterday: 'Yesterday'
+    yesterday: 'Yesterday',
+    landscape: 'Landscape',
+    portrait: 'Portrait',
+    square: 'Square',
+    examplePrompt1: 'A golden Shiba Inu walking through the streets of Shibuya, Tokyo, camera following, cinematic shot, 4K',
+    examplePrompt2: 'Drone aerial view, green aurora reflecting on a glacial lake in Iceland, slow push-in',
+    examplePrompt3: 'Cyberpunk futuristic city, neon lights reflected in rain puddles, nightscape, cinematic colors',
+    examplePrompt4: 'Chinese ink painting style, a small boat drifting among misty mountains and rivers, classical atmosphere'
   }
 }

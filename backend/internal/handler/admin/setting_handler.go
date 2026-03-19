@@ -80,6 +80,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		RegistrationEmailSuffixWhitelist:     settings.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                     settings.PromoCodeEnabled,
 		PasswordResetEnabled:                 settings.PasswordResetEnabled,
+		FrontendURL:                          settings.FrontendURL,
 		InvitationCodeEnabled:                settings.InvitationCodeEnabled,
 		TotpEnabled:                          settings.TotpEnabled,
 		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
@@ -137,6 +138,7 @@ type UpdateSettingsRequest struct {
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
 	PromoCodeEnabled                 bool     `json:"promo_code_enabled"`
 	PasswordResetEnabled             bool     `json:"password_reset_enabled"`
+	FrontendURL                      string   `json:"frontend_url"`
 	InvitationCodeEnabled            bool     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool     `json:"totp_enabled"` // TOTP 双因素认证
 
@@ -326,6 +328,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// Frontend URL 验证
+	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
+	if req.FrontendURL != "" {
+		if err := config.ValidateAbsoluteHTTPURL(req.FrontendURL); err != nil {
+			response.BadRequest(c, "Frontend URL must be an absolute http(s) URL")
+			return
+		}
+	}
+
 	// 自定义菜单项验证
 	const (
 		maxCustomMenuItems    = 20
@@ -437,6 +448,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEmailSuffixWhitelist: req.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                 req.PromoCodeEnabled,
 		PasswordResetEnabled:             req.PasswordResetEnabled,
+		FrontendURL:                      req.FrontendURL,
 		InvitationCodeEnabled:            req.InvitationCodeEnabled,
 		TotpEnabled:                      req.TotpEnabled,
 		SMTPHost:                         req.SMTPHost,
@@ -531,6 +543,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEmailSuffixWhitelist:     updatedSettings.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                     updatedSettings.PromoCodeEnabled,
 		PasswordResetEnabled:                 updatedSettings.PasswordResetEnabled,
+		FrontendURL:                          updatedSettings.FrontendURL,
 		InvitationCodeEnabled:                updatedSettings.InvitationCodeEnabled,
 		TotpEnabled:                          updatedSettings.TotpEnabled,
 		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
@@ -613,6 +626,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.PasswordResetEnabled != after.PasswordResetEnabled {
 		changed = append(changed, "password_reset_enabled")
+	}
+	if before.FrontendURL != after.FrontendURL {
+		changed = append(changed, "frontend_url")
 	}
 	if before.TotpEnabled != after.TotpEnabled {
 		changed = append(changed, "totp_enabled")
@@ -959,6 +975,58 @@ func (h *SettingHandler) DeleteAdminAPIKey(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Admin API key deleted"})
+}
+
+// GetOverloadCooldownSettings 获取529过载冷却配置
+// GET /api/v1/admin/settings/overload-cooldown
+func (h *SettingHandler) GetOverloadCooldownSettings(c *gin.Context) {
+	settings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OverloadCooldownSettings{
+		Enabled:         settings.Enabled,
+		CooldownMinutes: settings.CooldownMinutes,
+	})
+}
+
+// UpdateOverloadCooldownSettingsRequest 更新529过载冷却配置请求
+type UpdateOverloadCooldownSettingsRequest struct {
+	Enabled         bool `json:"enabled"`
+	CooldownMinutes int  `json:"cooldown_minutes"`
+}
+
+// UpdateOverloadCooldownSettings 更新529过载冷却配置
+// PUT /api/v1/admin/settings/overload-cooldown
+func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
+	var req UpdateOverloadCooldownSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	settings := &service.OverloadCooldownSettings{
+		Enabled:         req.Enabled,
+		CooldownMinutes: req.CooldownMinutes,
+	}
+
+	if err := h.settingService.SetOverloadCooldownSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updatedSettings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OverloadCooldownSettings{
+		Enabled:         updatedSettings.Enabled,
+		CooldownMinutes: updatedSettings.CooldownMinutes,
+	})
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置
