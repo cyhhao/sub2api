@@ -3,6 +3,8 @@ package service
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMayContainToolCallPayload(t *testing.T) {
@@ -512,4 +514,49 @@ func TestCorrectToolParameters(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCorrectToolParameters_PreservesExistingCamelCaseKeys(t *testing.T) {
+	corrector := NewCodexToolCorrector()
+
+	input := `{
+		"tool_calls": [{
+			"function": {
+				"name": "apply_patch",
+				"arguments": "{\"filePath\":\"/foo/bar.go\",\"oldString\":\"old\",\"newString\":\"new\",\"replaceAll\":true}"
+			}
+		}]
+	}`
+
+	corrected, changed := corrector.CorrectToolCallsInSSEData(input)
+	require.True(t, changed, "tool name should still be normalized from apply_patch to edit")
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(corrected), &result))
+
+	toolCalls, ok := result["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolCalls, 1)
+
+	toolCall, ok := toolCalls[0].(map[string]any)
+	require.True(t, ok)
+
+	function, ok := toolCall["function"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "edit", function["name"])
+
+	argumentsStr, ok := function["arguments"].(string)
+	require.True(t, ok)
+
+	var args map[string]any
+	require.NoError(t, json.Unmarshal([]byte(argumentsStr), &args))
+
+	require.Contains(t, args, "filePath")
+	require.Contains(t, args, "oldString")
+	require.Contains(t, args, "newString")
+	require.Contains(t, args, "replaceAll")
+	require.NotContains(t, args, "filPath")
+	require.NotContains(t, args, "oldtring")
+	require.NotContains(t, args, "newtring")
+	require.NotContains(t, args, "replaceAl")
 }

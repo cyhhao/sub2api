@@ -218,3 +218,59 @@ func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
 	body := rec.Body.String()
 	require.Contains(t, body, "content_block_delta", "响应应包含转发的 SSE 事件")
 }
+
+func TestHandleStreamingResponse_MimicClaudeCodeToolInputDoesNotTruncateCamelCaseKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newMinimalGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("event: content_block_start\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Edit\",\"input\":{}}}\n\n"))
+
+		// 故意把 filePath 拆开，覆盖历史上最容易吞字符的边界情况。
+		_, _ = pw.Write([]byte("event: content_block_delta\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"fi\"}}\n\n"))
+		_, _ = pw.Write([]byte("event: content_block_delta\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"lePath\\\":\\\"/tmp/demo.txt\\\",\\\"old\"}}\n\n"))
+		_, _ = pw.Write([]byte("event: content_block_delta\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"String\\\":\\\"before\\\",\\\"newString\\\":\\\"after\\\"}\"}}\n\n"))
+
+		_, _ = pw.Write([]byte("event: content_block_stop\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3}}\n\n"))
+		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(
+		context.Background(),
+		resp,
+		c,
+		&Account{ID: 1},
+		time.Now(),
+		"model",
+		"model",
+		map[string]string{"Edit": "edit"},
+		true,
+	)
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	body := rec.Body.String()
+	require.Contains(t, body, `"name":"edit"`)
+	require.Contains(t, body, `\"filePath\":\"/tmp/demo.txt\"`)
+	require.Contains(t, body, `\"oldString\":\"before\"`)
+	require.Contains(t, body, `\"newString\":\"after\"`)
+	require.NotContains(t, body, `\"filPath\":`)
+	require.NotContains(t, body, `\"oldtring\":`)
+	require.NotContains(t, body, `\"newtring\":`)
+}

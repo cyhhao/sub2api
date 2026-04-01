@@ -662,17 +662,33 @@ type TLSFingerprintConfig struct {
 }
 
 // TLSProfileConfig 单个TLS指纹模板的配置
+// 所有列表字段为空时使用内置默认值（Claude CLI 2.x / Node.js 20.x）
+// 建议通过 TLS 指纹采集工具 (tests/tls-fingerprint-web) 获取完整配置
 type TLSProfileConfig struct {
 	// Name: 模板显示名称
 	Name string `mapstructure:"name"`
 	// EnableGREASE: 是否启用GREASE扩展（Chrome使用，Node.js不使用）
 	EnableGREASE bool `mapstructure:"enable_grease"`
-	// CipherSuites: TLS加密套件列表（空则使用内置默认值）
+	// CipherSuites: TLS加密套件列表
 	CipherSuites []uint16 `mapstructure:"cipher_suites"`
-	// Curves: 椭圆曲线列表（空则使用内置默认值）
+	// Curves: 椭圆曲线列表
 	Curves []uint16 `mapstructure:"curves"`
-	// PointFormats: 点格式列表（空则使用内置默认值）
-	PointFormats []uint8 `mapstructure:"point_formats"`
+	// PointFormats: 点格式列表
+	PointFormats []uint16 `mapstructure:"point_formats"`
+	// SignatureAlgorithms: 签名算法列表
+	SignatureAlgorithms []uint16 `mapstructure:"signature_algorithms"`
+	// ALPNProtocols: ALPN协议列表（如 ["h2", "http/1.1"]）
+	ALPNProtocols []string `mapstructure:"alpn_protocols"`
+	// SupportedVersions: 支持的TLS版本列表（如 [0x0304, 0x0303] 即 TLS1.3, TLS1.2）
+	SupportedVersions []uint16 `mapstructure:"supported_versions"`
+	// KeyShareGroups: Key Share中发送的曲线组（如 [29] 即 X25519）
+	KeyShareGroups []uint16 `mapstructure:"key_share_groups"`
+	// PSKModes: PSK密钥交换模式（如 [1] 即 psk_dhe_ke）
+	PSKModes []uint16 `mapstructure:"psk_modes"`
+	// Extensions: TLS扩展类型ID列表，按发送顺序排列
+	// 空则使用内置默认顺序 [0,11,10,35,16,22,23,13,43,45,51]
+	// GREASE值(如0x0a0a)会自动插入GREASE扩展
+	Extensions []uint16 `mapstructure:"extensions"`
 }
 
 // GatewaySchedulingConfig accounts scheduling configuration.
@@ -1271,8 +1287,8 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
 	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
-	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/c7947e9871687e664180bc971d4837f1fc2784a9/model_prices_and_context_window.json")
-	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/c7947e9871687e664180bc971d4837f1fc2784a9/model_prices_and_context_window.sha256")
+	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
+	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
 	viper.SetDefault("pricing.data_dir", "./data")
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.update_interval_hours", 24)

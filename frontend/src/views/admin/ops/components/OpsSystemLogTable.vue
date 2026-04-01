@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogSinkHealth } from '@/api/admin/ops'
 import Pagination from '@/components/common/Pagination.vue'
+import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
 
 const appStore = useAppStore()
@@ -55,6 +56,37 @@ const filters = reactive({
   model: '',
   q: ''
 })
+
+const runtimeLevelOptions = [
+  { value: 'debug', label: 'debug' },
+  { value: 'info', label: 'info' },
+  { value: 'warn', label: 'warn' },
+  { value: 'error', label: 'error' }
+]
+
+const stacktraceLevelOptions = [
+  { value: 'none', label: 'none' },
+  { value: 'error', label: 'error' },
+  { value: 'fatal', label: 'fatal' }
+]
+
+const timeRangeOptions = [
+  { value: '5m', label: '5m' },
+  { value: '30m', label: '30m' },
+  { value: '1h', label: '1h' },
+  { value: '6h', label: '6h' },
+  { value: '24h', label: '24h' },
+  { value: '7d', label: '7d' },
+  { value: '30d', label: '30d' }
+]
+
+const filterLevelOptions = [
+  { value: '', label: '全部' },
+  { value: 'debug', label: 'debug' },
+  { value: 'info', label: 'info' },
+  { value: 'warn', label: 'warn' },
+  { value: 'error', label: 'error' }
+]
 
 const levelBadgeClass = (level: string) => {
   const v = String(level || '').toLowerCase()
@@ -344,23 +376,14 @@ onMounted(async () => {
         <div class="text-xs font-semibold text-gray-700 dark:text-gray-200">运行时日志配置（实时生效）</div>
         <span v-if="runtimeLoading" class="text-xs text-gray-500">加载中...</span>
       </div>
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-6">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
         <label class="text-xs text-gray-600 dark:text-gray-300">
           级别
-          <select v-model="runtimeConfig.level" class="input mt-1">
-            <option value="debug">debug</option>
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-          </select>
+          <Select v-model="runtimeConfig.level" class="mt-1" :options="runtimeLevelOptions" />
         </label>
         <label class="text-xs text-gray-600 dark:text-gray-300">
           堆栈阈值
-          <select v-model="runtimeConfig.stacktrace_level" class="input mt-1">
-            <option value="none">none</option>
-            <option value="error">error</option>
-            <option value="fatal">fatal</option>
-          </select>
+          <Select v-model="runtimeConfig.stacktrace_level" class="mt-1" :options="stacktraceLevelOptions" />
         </label>
         <label class="text-xs text-gray-600 dark:text-gray-300">
           采样初始
@@ -374,21 +397,27 @@ onMounted(async () => {
           保留天数
           <input v-model.number="runtimeConfig.retention_days" type="number" min="1" max="3650" class="input mt-1" />
         </label>
-        <div class="flex items-end gap-2">
-          <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-            <input v-model="runtimeConfig.caller" type="checkbox" />
-            caller
-          </label>
-          <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-            <input v-model="runtimeConfig.enable_sampling" type="checkbox" />
-            sampling
-          </label>
-          <button type="button" class="btn btn-primary btn-sm" :disabled="runtimeSaving" @click="saveRuntimeConfig">
-            {{ runtimeSaving ? '保存中...' : '保存并生效' }}
-          </button>
-          <button type="button" class="btn btn-secondary btn-sm" :disabled="runtimeSaving" @click="resetRuntimeConfig">
-            回滚默认值
-          </button>
+        <div class="md:col-span-2 xl:col-span-6">
+          <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <input v-model="runtimeConfig.caller" type="checkbox" />
+                caller
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <input v-model="runtimeConfig.enable_sampling" type="checkbox" />
+                sampling
+              </label>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+              <button type="button" class="btn btn-primary btn-sm" :disabled="runtimeSaving" @click="saveRuntimeConfig">
+                {{ runtimeSaving ? '保存中...' : '保存并生效' }}
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" :disabled="runtimeSaving" @click="resetRuntimeConfig">
+                回滚默认值
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <p v-if="health.last_error" class="mt-2 text-xs text-red-600 dark:text-red-400">最近写入错误：{{ health.last_error }}</p>
@@ -397,15 +426,7 @@ onMounted(async () => {
     <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-5">
       <label class="text-xs text-gray-600 dark:text-gray-300">
         时间范围
-        <select v-model="filters.time_range" class="input mt-1">
-          <option value="5m">5m</option>
-          <option value="30m">30m</option>
-          <option value="1h">1h</option>
-          <option value="6h">6h</option>
-          <option value="24h">24h</option>
-          <option value="7d">7d</option>
-          <option value="30d">30d</option>
-        </select>
+        <Select v-model="filters.time_range" class="mt-1" :options="timeRangeOptions" />
       </label>
       <label class="text-xs text-gray-600 dark:text-gray-300">
         开始时间（可选）
@@ -417,13 +438,7 @@ onMounted(async () => {
       </label>
       <label class="text-xs text-gray-600 dark:text-gray-300">
         级别
-        <select v-model="filters.level" class="input mt-1">
-          <option value="">全部</option>
-          <option value="debug">debug</option>
-          <option value="info">info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-        </select>
+        <Select v-model="filters.level" class="mt-1" :options="filterLevelOptions" />
       </label>
       <label class="text-xs text-gray-600 dark:text-gray-300">
         组件
