@@ -63,6 +63,15 @@ const (
 	claudeMimicRequestBodyKey   = "claude_mimic_request_body"
 )
 
+var claudeOAuthSystemSanitizer = strings.NewReplacer(
+	"You are OpenCode, the best coding agent on the planet.",
+	strings.TrimSpace(claudeCodeSystemPrompt),
+	"You are a personal assistant operating inside OpenClaw.",
+	strings.TrimSpace(claudeCodeSystemPrompt),
+	"You are a personal assistant running inside OpenClaw.",
+	strings.TrimSpace(claudeCodeSystemPrompt),
+)
+
 // ForceCacheBillingContextKey 强制缓存计费上下文键
 // 用于粘性会话切换时，将 input_tokens 转为 cache_read_input_tokens 计费
 type forceCacheBillingKeyType struct{}
@@ -1004,22 +1013,18 @@ func normalizeToolNameForOpenCode(name string, cache map[string]string) string {
 	return stripped
 }
 
-// sanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
-// We intentionally avoid broad keyword replacement in system prompts to prevent
-// accidentally changing user-provided instructions.
+// sanitizeSystemText rewrites only fixed client identity banners that are known to
+// fingerprint non-Claude-Code clients. We intentionally avoid broad keyword
+// replacement in system prompts to prevent accidentally changing user-provided
+// instructions.
 func sanitizeSystemText(text string) string {
 	if text == "" {
 		return text
 	}
-	// Some clients include a fixed OpenCode identity sentence. Anthropic may treat
-	// this as a non-Claude-Code fingerprint, so rewrite it to the canonical
-	// Claude Code banner before generic "OpenCode"/"opencode" replacements.
-	text = strings.ReplaceAll(
-		text,
-		"You are OpenCode, the best coding agent on the planet.",
-		strings.TrimSpace(claudeCodeSystemPrompt),
-	)
-	return text
+	// Some clients include a fixed identity sentence at the top of their system
+	// prompt. Anthropic may treat this as a non-Claude-Code fingerprint, so rewrite
+	// only the exact known banner(s) to the canonical Claude Code banner.
+	return claudeOAuthSystemSanitizer.Replace(text)
 }
 
 func marshalAnthropicSystemTextBlock(text string, includeCacheControl bool) ([]byte, error) {
