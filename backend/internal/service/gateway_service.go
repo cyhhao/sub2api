@@ -4044,6 +4044,10 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 	return out
 }
 
+func shouldRewriteSystemForNonClaudeCode(system any) bool {
+	return !systemIncludesClaudeCodePrompt(system)
+}
+
 type cacheControlPath struct {
 	path string
 	log  string
@@ -4236,10 +4240,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var toolNameMap map[string]string
 
 	if shouldMimicClaudeCode {
-		// 非 Claude Code 客户端：将 system 替换为 Claude Code 标识，原始 system 迁移至 messages
-		// 条件：1) OAuth/SetupToken 账号  2) 不是 Claude Code 客户端  3) 不是 Haiku 模型  4) system 中还没有 Claude Code 提示词
-		if !strings.Contains(strings.ToLower(reqModel), "haiku") &&
-			!systemIncludesClaudeCodePrompt(parsed.System) {
+		// 非 Claude Code 客户端：将 system 替换为 Claude Code 标识，原始 system 迁移至 messages。
+		// 只要 system 中还没有 Claude Code 提示词，就统一处理；不再对特定模型做例外。
+		if shouldRewriteSystemForNonClaudeCode(parsed.System) {
 			body = rewriteSystemForNonClaudeCode(body, parsed.System)
 		}
 

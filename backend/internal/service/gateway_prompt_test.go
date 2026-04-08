@@ -416,3 +416,38 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldRewriteSystemForNonClaudeCode(t *testing.T) {
+	tests := []struct {
+		name   string
+		system any
+		want   bool
+	}{
+		{
+			name:   "custom OpenClaw system should rewrite",
+			system: "You are a personal assistant running inside OpenClaw.",
+			want:   true,
+		},
+		{
+			name:   "Claude Code prompt should not rewrite",
+			system: claudeCodeSystemPrompt,
+			want:   false,
+		},
+		{
+			name:   "Claude Code prompt array should not rewrite",
+			system: []any{map[string]any{"type": "text", "text": claudeCodeSystemPrompt}},
+			want:   false,
+		},
+		{
+			name:   "empty system should rewrite to canonical Claude banner",
+			system: nil,
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, shouldRewriteSystemForNonClaudeCode(tt.system))
+		})
+	}
+}
