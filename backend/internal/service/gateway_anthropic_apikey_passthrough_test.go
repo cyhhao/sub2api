@@ -697,12 +697,16 @@ func TestGatewayService_AnthropicOAuth_ForwardPreservesBillingHeaderSystemBlock(
 		body string
 	}{
 		{
-			name: "system array",
+			name: "system array sonnet",
 			body: `{"model":"claude-3-5-sonnet-latest","system":[{"type":"text","text":"x-anthropic-billing-header keep"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
 		},
 		{
-			name: "system string",
+			name: "system string sonnet",
 			body: `{"model":"claude-3-5-sonnet-latest","system":"x-anthropic-billing-header keep","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
+		},
+		{
+			name: "system string haiku",
+			body: `{"model":"claude-haiku-4-5","system":"x-anthropic-billing-header keep","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`,
 		},
 	}
 
@@ -758,10 +762,13 @@ func TestGatewayService_AnthropicOAuth_ForwardPreservesBillingHeaderSystemBlock(
 			require.NotNil(t, upstream.lastReq)
 			require.Equal(t, "Bearer oauth-token", getHeaderRaw(upstream.lastReq.Header, "authorization"))
 			require.Contains(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), claude.BetaOAuth)
+			require.Contains(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), claude.BetaClaudeCode)
 
 			system := gjson.GetBytes(upstream.lastBody, "system")
 			require.True(t, system.Exists())
-			require.Equal(t, claudeCodeSystemPrompt, system.String())
+			require.True(t, system.IsArray(), "system should be an array")
+			require.Equal(t, claudeCodeSystemPrompt, system.Array()[0].Get("text").String())
+			require.Equal(t, "ephemeral", system.Array()[0].Get("cache_control.type").String())
 
 			// 原始 system prompt 应迁移至 messages 中
 			messages := gjson.GetBytes(upstream.lastBody, "messages")
