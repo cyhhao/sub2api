@@ -42,17 +42,16 @@
               >
                 <component :is="item.icon" class="h-5 w-5 flex-shrink-0" />
                 <span
-                  class="sidebar-label"
+                  class="sidebar-label sidebar-label-flex"
                   :class="{ 'sidebar-label-collapsed': sidebarCollapsed }"
                   :aria-hidden="sidebarCollapsed ? 'true' : 'false'"
                 >
-                  {{ item.label }}
+                  <span class="min-w-0 truncate">{{ item.label }}</span>
+                  <ChevronDownIcon
+                    class="h-4 w-4 flex-shrink-0 transition-transform duration-200"
+                    :class="isGroupExpanded(item) ? 'rotate-180' : ''"
+                  />
                 </span>
-                <ChevronDownIcon
-                  v-if="!sidebarCollapsed"
-                  class="ml-auto h-4 w-4 flex-shrink-0 transition-transform duration-200"
-                  :class="isGroupExpanded(item) ? 'rotate-180' : ''"
-                />
               </button>
               <!-- Children -->
               <div v-if="!sidebarCollapsed && isGroupExpanded(item)" class="mb-1 ml-4 border-l border-gray-200 pl-2 dark:border-dark-600">
@@ -74,7 +73,7 @@
               v-else
               :to="item.path"
               class="sidebar-link mb-1"
-              :class="{ 'sidebar-link-active': isActive(item.path) }"
+              :class="{ 'sidebar-link-active': isActive(item.path), 'sidebar-link-collapsed': sidebarCollapsed }"
               :title="sidebarCollapsed ? item.label : undefined"
               :id="
                 item.path === '/admin/accounts'
@@ -89,13 +88,7 @@
             >
               <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
               <component v-else :is="item.icon" class="h-5 w-5 flex-shrink-0" />
-              <span
-                class="sidebar-label"
-                :class="{ 'sidebar-label-collapsed': sidebarCollapsed }"
-                :aria-hidden="sidebarCollapsed ? 'true' : 'false'"
-              >
-                {{ item.label }}
-              </span>
+              <span class="sidebar-label" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">{{ item.label }}</span>
             </router-link>
           </template>
         </div>
@@ -902,6 +895,12 @@ onMounted(() => {
   max-width: 12rem;
 }
 
+.sidebar-label-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
 .sidebar-label-collapsed {
   max-width: 0;
   opacity: 0;
