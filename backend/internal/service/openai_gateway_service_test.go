@@ -1558,7 +1558,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 			MaxLineSize:               defaultMaxLineSize,
 		},
 	}
-	svc := &OpenAIGatewayService{cfg: cfg}
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1569,9 +1569,10 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Body:       pr,
 		Header: http.Header{
-			"Cache-Control": []string{"upstream"},
-			"X-Request-Id":  []string{"req-123"},
-			"Content-Type":  []string{"application/custom"},
+			"Cache-Control":      []string{"upstream"},
+			"X-Request-Id":       []string{"req-123"},
+			"X-Codex-Turn-State": []string{"turn-state-123"},
+			"Content-Type":       []string{"application/custom"},
 		},
 	}
 
@@ -1595,6 +1596,45 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 	if rec.Header().Get("X-Request-Id") != "req-123" {
 		t.Fatalf("expected X-Request-Id passthrough, got %q", rec.Header().Get("X-Request-Id"))
 	}
+	if rec.Header().Get("X-Codex-Turn-State") != "turn-state-123" {
+		t.Fatalf("expected X-Codex-Turn-State passthrough, got %q", rec.Header().Get("X-Codex-Turn-State"))
+	}
+}
+
+func TestOpenAIStreamingPreservesContextCompactionItem(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+	}
+
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"context_compaction\",\"encrypted_content\":\"enc-123\"}}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+	_ = pr.Close()
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, rec.Body.String(), `"type":"context_compaction"`)
+	require.Contains(t, rec.Body.String(), `"encrypted_content":"enc-123"`)
 }
 
 func TestOpenAIStreamingReuseScannerBufferAndStillWorks(t *testing.T) {
@@ -1829,6 +1869,10 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction"}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+	c.Request.Header.Set("X-Codex-Installation-Id", "install-123")
+	c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-123")
+	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"turn_id":"turn-123"}`)
+	c.Request.Header.Set("X-Codex-Window-Id", "window-123")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -1840,6 +1884,10 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+	require.Equal(t, "install-123", req.Header.Get("X-Codex-Installation-Id"))
+	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
+	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
+	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
 }
 
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t *testing.T) {
@@ -1849,6 +1897,10 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction"}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+	c.Request.Header.Set("X-Codex-Installation-Id", "install-123")
+	c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-123")
+	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"turn_id":"turn-123"}`)
+	c.Request.Header.Set("X-Codex-Window-Id", "window-123")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -1860,6 +1912,10 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 
 	require.NoError(t, err)
 	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+	require.Equal(t, "install-123", req.Header.Get("X-Codex-Installation-Id"))
+	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
+	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
+	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
