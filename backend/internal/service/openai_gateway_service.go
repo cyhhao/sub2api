@@ -38,9 +38,10 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.125.0"
+	openaiPlatformAPIURL           = "https://api.openai.com/v1/responses"
+	openaiStickySessionTTL         = time.Hour // 粘性会话TTL
+	codexCLIUserAgent              = "codex_cli_rs/0.125.0"
+	codexRemoteCompactionV2Feature = "remote_compaction_v2"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -114,6 +115,58 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"X-Client-Request-ID",
 	"X-Forwarded-For",
 	"X-Real-IP",
+}
+
+func ensureCodexContextCompactionBetaHeader(header http.Header, body []byte) {
+	if !openAIRequestBodyHasContextCompaction(body) {
+		return
+	}
+
+	existing := strings.TrimSpace(header.Get("X-Codex-Beta-Features"))
+	if existing == "" {
+		header.Set("X-Codex-Beta-Features", codexRemoteCompactionV2Feature)
+		return
+	}
+
+	for _, token := range strings.Split(existing, ",") {
+		if strings.TrimSpace(token) == codexRemoteCompactionV2Feature {
+			return
+		}
+	}
+	header.Set("X-Codex-Beta-Features", existing+","+codexRemoteCompactionV2Feature)
+}
+
+func openAIRequestBodyHasContextCompaction(body []byte) bool {
+	if !bytes.Contains(body, []byte("context_compaction")) {
+		return false
+	}
+
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return jsonValueHasType(payload, "context_compaction")
+}
+
+func jsonValueHasType(value any, itemType string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if actual, ok := typed["type"].(string); ok && actual == itemType {
+			return true
+		}
+		for _, child := range typed {
+			if jsonValueHasType(child, itemType) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if jsonValueHasType(child, itemType) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
@@ -3163,6 +3216,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
 	req.Header.Set("authorization", "Bearer "+token)
+	ensureCodexContextCompactionBetaHeader(req.Header, body)
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
@@ -3879,6 +3933,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
+	ensureCodexContextCompactionBetaHeader(req.Header, body)
 	if account.Type == AccountTypeOAuth {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。

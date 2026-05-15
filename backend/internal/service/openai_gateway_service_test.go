@@ -1890,6 +1890,39 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
 }
 
+func TestOpenAIBuildUpstreamRequestInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","input":[{"type":"message","content":"hi"},{"type":"context_compaction"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{Type: AccountTypeOAuth}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", true, "", true)
+
+	require.NoError(t, err)
+	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+}
+
+func TestOpenAIBuildUpstreamRequestAppendsCodexBetaFeaturesForContextCompaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("X-Codex-Beta-Features", "some_other_feature")
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{Type: AccountTypeOAuth}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", true, "", true)
+
+	require.NoError(t, err)
+	require.Equal(t, "some_other_feature,remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+}
+
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1916,6 +1949,22 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
+}
+
+func TestOpenAIBuildUpstreamRequestOpenAIPassthroughInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+
+	svc := &OpenAIGatewayService{}
+	account := &Account{Type: AccountTypeOAuth}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, body, "token")
+
+	require.NoError(t, err)
+	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
