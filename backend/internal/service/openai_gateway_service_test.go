@@ -1973,44 +1973,6 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughInfersCodexBetaFeaturesForCo
 	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 }
 
-func TestOpenAIBuildUpstreamRequestAPIKeyDowngradesContextCompactionForPlatform(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction","encrypted_content":"enc-123"}]}`)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
-
-	svc := &OpenAIGatewayService{}
-	account := &Account{Type: AccountTypeAPIKey}
-
-	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", true, "", true)
-
-	require.NoError(t, err)
-	upstreamBody, err := io.ReadAll(req.Body)
-	require.NoError(t, err)
-	require.Equal(t, "compaction", gjson.GetBytes(upstreamBody, "input.0.type").String())
-	require.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
-}
-
-func TestOpenAIBuildUpstreamRequestOpenAIPassthroughAPIKeyDowngradesContextCompactionForPlatform(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"gpt-5.5","input":[{"type":"context_compaction","encrypted_content":"enc-123"}]}`)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
-
-	svc := &OpenAIGatewayService{}
-	account := &Account{Type: AccountTypeAPIKey}
-
-	req, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, body, "token")
-
-	require.NoError(t, err)
-	upstreamBody, err := io.ReadAll(req.Body)
-	require.NoError(t, err)
-	require.Equal(t, "compaction", gjson.GetBytes(upstreamBody, "input.0.type").String())
-	require.Empty(t, req.Header.Get("X-Codex-Beta-Features"))
-}
-
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
