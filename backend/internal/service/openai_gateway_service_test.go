@@ -1873,6 +1873,7 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 	c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-123")
 	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"turn_id":"turn-123"}`)
 	c.Request.Header.Set("X-Codex-Window-Id", "window-123")
+	c.Request.Header.Set("Version", "0.999.0")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -1888,6 +1889,7 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
+	require.Equal(t, "0.999.0", req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
@@ -1904,6 +1906,7 @@ func TestOpenAIBuildUpstreamRequestInfersCodexBetaFeaturesForContextCompaction(t
 
 	require.NoError(t, err)
 	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestAppendsCodexBetaFeaturesForContextCompaction(t *testing.T) {
@@ -1934,6 +1937,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 	c.Request.Header.Set("X-Codex-Parent-Thread-Id", "parent-123")
 	c.Request.Header.Set("X-Codex-Turn-Metadata", `{"turn_id":"turn-123"}`)
 	c.Request.Header.Set("X-Codex-Window-Id", "window-123")
+	c.Request.Header.Set("Version", "0.999.0")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -1949,6 +1953,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
+	require.Equal(t, "0.999.0", req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
@@ -1965,6 +1970,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughInfersCodexBetaFeaturesForCo
 
 	require.NoError(t, err)
 	require.Equal(t, "remote_compaction_v2", req.Header.Get("X-Codex-Beta-Features"))
+	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
