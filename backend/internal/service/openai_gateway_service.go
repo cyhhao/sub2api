@@ -169,6 +169,48 @@ func jsonValueHasType(value any, itemType string) bool {
 	return false
 }
 
+func normalizeCodexContextCompactionForPlatformBody(body []byte) ([]byte, bool, error) {
+	if !openAIRequestBodyHasContextCompaction(body) {
+		return body, false, nil
+	}
+
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false, err
+	}
+	if !replaceJSONItemType(payload, "context_compaction", "compaction") {
+		return body, false, nil
+	}
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false, err
+	}
+	return normalized, true, nil
+}
+
+func replaceJSONItemType(value any, fromType, toType string) bool {
+	changed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		if actual, ok := typed["type"].(string); ok && actual == fromType {
+			typed["type"] = toType
+			changed = true
+		}
+		for _, child := range typed {
+			if replaceJSONItemType(child, fromType, toType) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if replaceJSONItemType(child, fromType, toType) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
 type OpenAICodexUsageSnapshot struct {
 	PrimaryUsedPercent          *float64 `json:"primary_used_percent,omitempty"`
@@ -3191,6 +3233,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		}
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	if account.Type != AccountTypeOAuth {
+		normalizedBody, _, err := normalizeCodexContextCompactionForPlatformBody(body)
+		if err != nil {
+			return nil, err
+		}
+		body = normalizedBody
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -3904,6 +3953,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		targetURL = openaiPlatformAPIURL
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	if account.Type != AccountTypeOAuth {
+		normalizedBody, _, err := normalizeCodexContextCompactionForPlatformBody(body)
+		if err != nil {
+			return nil, err
+		}
+		body = normalizedBody
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
