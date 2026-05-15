@@ -67,6 +67,7 @@ var openaiAllowedHeaders = map[string]bool{
 	"user-agent":            true,
 	"originator":            true,
 	"session_id":            true,
+	"x-codex-beta-features": true,
 	"x-codex-turn-state":    true,
 	"x-codex-turn-metadata": true,
 }
@@ -82,6 +83,7 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	"user-agent":            true,
 	"originator":            true,
 	"session_id":            true,
+	"x-codex-beta-features": true,
 	"x-codex-turn-state":    true,
 	"x-codex-turn-metadata": true,
 }
@@ -96,6 +98,7 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"Originator",
 	"Session_ID",
 	"Conversation_ID",
+	"X-Codex-Beta-Features",
 	"X-Request-ID",
 	"X-Client-Request-ID",
 	"X-Forwarded-For",
