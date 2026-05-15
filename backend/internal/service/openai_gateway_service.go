@@ -61,31 +61,37 @@ const (
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-beta-features": true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept-language":          true,
+	"content-type":             true,
+	"conversation_id":          true,
+	"user-agent":               true,
+	"originator":               true,
+	"session_id":               true,
+	"x-codex-beta-features":    true,
+	"x-codex-installation-id":  true,
+	"x-codex-parent-thread-id": true,
+	"x-codex-turn-state":       true,
+	"x-codex-turn-metadata":    true,
+	"x-codex-window-id":        true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                true,
-	"accept-language":       true,
-	"content-type":          true,
-	"conversation_id":       true,
-	"openai-beta":           true,
-	"user-agent":            true,
-	"originator":            true,
-	"session_id":            true,
-	"x-codex-beta-features": true,
-	"x-codex-turn-state":    true,
-	"x-codex-turn-metadata": true,
+	"accept":                   true,
+	"accept-language":          true,
+	"content-type":             true,
+	"conversation_id":          true,
+	"openai-beta":              true,
+	"user-agent":               true,
+	"originator":               true,
+	"session_id":               true,
+	"x-codex-beta-features":    true,
+	"x-codex-installation-id":  true,
+	"x-codex-parent-thread-id": true,
+	"x-codex-turn-state":       true,
+	"x-codex-turn-metadata":    true,
+	"x-codex-window-id":        true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -99,6 +105,11 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"Session_ID",
 	"Conversation_ID",
 	"X-Codex-Beta-Features",
+	"X-Codex-Installation-Id",
+	"X-Codex-Parent-Thread-Id",
+	"X-Codex-Turn-State",
+	"X-Codex-Turn-Metadata",
+	"X-Codex-Window-Id",
 	"X-Request-ID",
 	"X-Client-Request-ID",
 	"X-Forwarded-For",
@@ -3802,6 +3813,7 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 		"x-codex-secondary-reset-after-seconds",
 		"x-codex-secondary-window-minutes",
 		"x-codex-primary-over-secondary-limit-percent",
+		"x-codex-turn-state",
 	} {
 		vals := getCaseInsensitiveValues(src, rawKey)
 		if len(vals) == 0 {

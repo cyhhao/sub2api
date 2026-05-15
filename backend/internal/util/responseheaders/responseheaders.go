@@ -32,6 +32,7 @@ var defaultAllowed = map[string]struct{}{
 	"retry-after":                    {},
 	"location":                       {},
 	"www-authenticate":               {},
+	"x-codex-turn-state":             {},
 }
 
 // hopByHopHeaders 是跳过的 hop-by-hop 头部，这些头部由 HTTP 库自动处理
