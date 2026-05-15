@@ -66,6 +66,7 @@ var openaiAllowedHeaders = map[string]bool{
 	"content-type":             true,
 	"conversation_id":          true,
 	"user-agent":               true,
+	"version":                  true,
 	"originator":               true,
 	"session_id":               true,
 	"x-codex-beta-features":    true,
@@ -85,6 +86,7 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	"conversation_id":          true,
 	"openai-beta":              true,
 	"user-agent":               true,
+	"version":                  true,
 	"originator":               true,
 	"session_id":               true,
 	"x-codex-beta-features":    true,
@@ -3295,6 +3297,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if req.Header.Get("originator") == "" {
 			req.Header.Set("originator", "codex_cli_rs")
 		}
+		if req.Header.Get("version") == "" {
+			req.Header.Set("version", codexCLIVersion)
+		}
 		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
 		if clientSessionID == "" {
 			clientSessionID = promptCacheKey
@@ -4007,13 +4012,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		apiKeyID := getAPIKeyIDFromContext(c)
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			}
 			compactSession := resolveOpenAICompactSessionID(c)
 			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
 		} else {
 			req.Header.Set("accept", "text/event-stream")
+		}
+		if req.Header.Get("version") == "" {
+			req.Header.Set("version", codexCLIVersion)
 		}
 		if promptCacheKey != "" {
 			isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
