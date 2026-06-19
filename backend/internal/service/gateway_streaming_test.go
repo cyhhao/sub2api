@@ -471,7 +471,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 		_, _ = pw.Write([]byte("event: error\ndata: " + errorJSON + "\n\n"))
 	}()
 
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", nil, false)
 	_ = pr.Close()
 
 	require.Error(t, err)
@@ -508,7 +508,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_EmptyDataLine(t *testing.T) {
 		_, _ = pw.Write([]byte("event: error\n\n"))
 	}()
 
-	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", nil, false)
 	_ = pr.Close()
 
 	require.Error(t, err)
@@ -542,7 +542,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_AfterPartialStreamOutput(t *testi
 		_, _ = pw.Write([]byte("event: error\ndata: " + errorJSON + "\n\n"))
 	}()
 
-	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", nil, false)
 	_ = pr.Close()
 
 	require.Error(t, err)
@@ -575,7 +575,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_NonJSONDataLine(t *testing.T) {
 		_, _ = pw.Write([]byte("event: error\ndata: not-a-json-payload\n\n"))
 	}()
 
-	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", nil, false)
 	_ = pr.Close()
 
 	require.Error(t, err)
