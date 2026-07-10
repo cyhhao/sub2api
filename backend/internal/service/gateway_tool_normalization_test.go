@@ -32,7 +32,7 @@ func TestNormalizeClaudeOAuthRequestBody_ToolSchemaKeepsOriginalParamNames(t *te
 		"messages":[]
 	}`)
 
-	newBody, _, toolNameMap := normalizeClaudeOAuthRequestBody(body, "claude-sonnet-4-5", claudeOAuthNormalizeOptions{})
+	newBody, _ := normalizeClaudeOAuthRequestBody(body, "claude-sonnet-4-5", claudeOAuthNormalizeOptions{})
 
 	var req map[string]any
 	require.NoError(t, json.Unmarshal(newBody, &req))
@@ -43,7 +43,7 @@ func TestNormalizeClaudeOAuthRequestBody_ToolSchemaKeepsOriginalParamNames(t *te
 
 	tool, ok := tools[0].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "Edit", tool["name"])
+	require.Equal(t, "edit", tool["name"])
 
 	schema, ok := tool["input_schema"].(map[string]any)
 	require.True(t, ok)
@@ -67,11 +67,5 @@ func TestNormalizeClaudeOAuthRequestBody_ToolSchemaKeepsOriginalParamNames(t *te
 	require.True(t, ok)
 	require.Equal(t, []any{"filePath", "oldString", "newString"}, requiredList)
 
-	// Tool name mapping is still expected.
-	require.Equal(t, "edit", toolNameMap["Edit"])
-	// Parameter key mapping is intentionally disabled.
-	require.NotContains(t, toolNameMap, "file_path")
-	require.NotContains(t, toolNameMap, "old_string")
-	require.NotContains(t, toolNameMap, "new_string")
-	require.NotContains(t, toolNameMap, "replace_all")
+	require.Nil(t, buildToolNameRewriteFromBody(newBody))
 }
