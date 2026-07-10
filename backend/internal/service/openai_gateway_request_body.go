@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -331,6 +332,17 @@ func deriveOpenAIReasoningEffortFromModel(model string) string {
 	return normalizeOpenAIReasoningEffortForModel(parts[len(parts)-1], modelID)
 }
 
+// deriveOpenAIReasoningEffortFromModelCandidates 依次对每个候选模型做后缀推导，
+// 返回第一个非空结果。
+func deriveOpenAIReasoningEffortFromModelCandidates(models []string) string {
+	for _, model := range models {
+		if value := deriveOpenAIReasoningEffortFromModel(model); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type openAIRequestView struct {
 	body               []byte
 	Model              string
@@ -571,20 +583,24 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	return ""
 }
 
-func extractOpenAIReasoningEffortFromBody(body []byte, requestedModel string) *string {
+// extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,
+// billingModel, originalModel）：显式 effort 的模型归一化（max 保留判定）用第一个
+// 非空候选；body 未携带 effort 时的模型后缀推导依次尝试每个候选——OAuth 的
+// normalizeCodexModel 会剥掉 upstreamModel 的 effort 后缀，只有原始模型名还留着。
+func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
 	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	}
 	if reasoningEffort != "" {
-		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, requestedModel)
+		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, firstNonEmpty(modelCandidates...))
 		if normalized == "" {
 			return nil
 		}
 		return &normalized
 	}
 
-	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
+	value := deriveOpenAIReasoningEffortFromModelCandidates(modelCandidates)
 	if value == "" {
 		return nil
 	}
@@ -644,9 +660,12 @@ func (e *OpenAIFastBlockedError) Error() string { return e.Message }
 //
 // Matching rules:
 //   - Scope filters by account type (all / oauth / apikey / bedrock)
+//   - UserIDs, when present, filters by the trusted Sub2API user that owns the API key
 //   - ServiceTier must be empty (= any), "all", or equal the normalized tier
 //   - ModelWhitelist narrows the rule to specific models; FallbackAction
 //     handles the non-matching case (default: pass)
+//   - User-specific rules take precedence over global rules; each group keeps
+//     the configured first-match order
 //
 // 与 Claude BetaPolicy 的差异（保留首条匹配 short-circuit）：
 //   - BetaPolicy 处理的是 anthropic-beta header 中的 token 集合，不同
@@ -672,37 +691,68 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 		}
 		settings = fetched
 	}
-	return evaluateOpenAIFastPolicyWithSettings(settings, account, model, tier)
+	return evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
 }
 
 // evaluateOpenAIFastPolicyWithSettings is the pure-function core extracted so
 // long-lived sessions (e.g. WS) can prefetch settings once and avoid hitting
 // the settingService on every frame. See WSSession entry and
 // openAIFastPolicySettingsFromContext for the caching glue.
-func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, account *Account, model, tier string) (action, errMsg string) {
+func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, userID int64, account *Account, model, tier string) (action, errMsg string) {
 	if settings == nil {
 		return BetaPolicyActionPass, ""
 	}
 	isOAuth := account != nil && account.IsOAuth()
 	isBedrock := account != nil && account.IsBedrock()
-	for _, rule := range settings.Rules {
-		if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {
-			continue
+
+	// 用户专属规则先于全局规则。规则组内仍按配置顺序首条命中，允许
+	// 管理员为某位用户配置例外，而不被先出现的全局规则覆盖。
+	for _, userScoped := range []bool{true, false} {
+		for _, rule := range settings.Rules {
+			if (len(rule.UserIDs) > 0) != userScoped || !openAIFastPolicyUserMatches(rule.UserIDs, userID) {
+				continue
+			}
+			if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {
+				continue
+			}
+			ruleTier := strings.ToLower(strings.TrimSpace(rule.ServiceTier))
+			if ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier {
+				continue
+			}
+			eff := BetaPolicyRule{
+				Action:               rule.Action,
+				ErrorMessage:         rule.ErrorMessage,
+				ModelWhitelist:       rule.ModelWhitelist,
+				FallbackAction:       rule.FallbackAction,
+				FallbackErrorMessage: rule.FallbackErrorMessage,
+			}
+			return resolveRuleAction(eff, model)
 		}
-		ruleTier := strings.ToLower(strings.TrimSpace(rule.ServiceTier))
-		if ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier {
-			continue
-		}
-		eff := BetaPolicyRule{
-			Action:               rule.Action,
-			ErrorMessage:         rule.ErrorMessage,
-			ModelWhitelist:       rule.ModelWhitelist,
-			FallbackAction:       rule.FallbackAction,
-			FallbackErrorMessage: rule.FallbackErrorMessage,
-		}
-		return resolveRuleAction(eff, model)
 	}
 	return BetaPolicyActionPass, ""
+}
+
+func openAIFastPolicyUserID(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	userID, _ := ctx.Value(ctxkey.UserID).(int64)
+	if userID <= 0 {
+		return 0
+	}
+	return userID
+}
+
+func openAIFastPolicyUserMatches(ruleUserIDs []int64, userID int64) bool {
+	if len(ruleUserIDs) == 0 {
+		return true
+	}
+	for _, ruleUserID := range ruleUserIDs {
+		if ruleUserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // openAIFastPolicyCtxKey 是 context 中预取的 OpenAIFastPolicySettings 缓存
@@ -1159,15 +1209,16 @@ func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error
 	return reqBody, nil
 }
 
-func extractOpenAIReasoningEffort(reqBody map[string]any, requestedModel string) *string {
-	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, requestedModel); present {
+// extractOpenAIReasoningEffort 的模型候选语义同 extractOpenAIReasoningEffortFromBody。
+func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...string) *string {
+	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, firstNonEmpty(modelCandidates...)); present {
 		if value == "" {
 			return nil
 		}
 		return &value
 	}
 
-	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
+	value := deriveOpenAIReasoningEffortFromModelCandidates(modelCandidates)
 	if value == "" {
 		return nil
 	}
@@ -1201,14 +1252,4 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
 		return "max"
 	}
 	return normalizeOpenAIReasoningEffort(raw)
-}
-
-func isOpenAIGPT56Model(model string) bool {
-	normalized := canonicalizeOpenAIModelAliasSpelling(model)
-	for _, prefix := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		if normalized == prefix || strings.HasPrefix(normalized, prefix+"-") {
-			return true
-		}
-	}
-	return false
 }
