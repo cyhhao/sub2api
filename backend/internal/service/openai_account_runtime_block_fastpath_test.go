@@ -84,7 +84,7 @@ func TestOpenAIRuntimeBlocker_IgnoresNonOpenAIFromRateLimitService(t *testing.T)
 	require.False(t, gateway.isOpenAIAccountRuntimeBlocked(account))
 }
 
-func TestOpenAIPoolModeTempRule_StopsSameAccountRetryAndBlocksAcrossModels(t *testing.T) {
+func TestOpenAIPoolModeTempRule_StopsSameAccountRetryAndScopesCooldownToModel(t *testing.T) {
 	repo := &errorPolicyRepoStub{}
 	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	gateway := &OpenAIGatewayService{
@@ -129,11 +129,13 @@ func TestOpenAIPoolModeTempRule_StopsSameAccountRetryAndBlocksAcrossModels(t *te
 
 	require.NotNil(t, failoverErr)
 	require.False(t, failoverErr.RetryableOnSameAccount)
-	require.Equal(t, 1, repo.tempCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "gpt-5.4", repo.modelRateLimitCalls[0].scope)
 	require.Equal(t, 0, repo.setErrCalls)
 	require.Equal(t, StatusActive, account.Status)
-	require.True(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.4"))
-	require.True(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
+	require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.4"))
+	require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-5.5"))
 }
 
 func TestOpenAIModelNotFound_DoesNotRuntimeBlockWholeAccount(t *testing.T) {
