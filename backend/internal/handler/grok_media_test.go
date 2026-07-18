@@ -53,6 +53,12 @@ func TestShouldRecordGrokMediaUsage(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "video content skips usage",
+			endpoint: service.GrokMediaEndpointVideoContent,
+			model:    "",
+			want:     false,
+		},
+		{
 			name:     "generation skips usage without model",
 			endpoint: service.GrokMediaEndpointImagesGenerations,
 			model:    " ",
@@ -79,6 +85,7 @@ func TestGrokMediaRequiredCapability(t *testing.T) {
 		{name: "video edit", endpoint: service.GrokMediaEndpointVideosEdits, want: service.OpenAIEndpointCapabilityGrokMediaGeneration},
 		{name: "video extension", endpoint: service.GrokMediaEndpointVideosExtensions, want: service.OpenAIEndpointCapabilityGrokMediaGeneration},
 		{name: "video status preserves lookup", endpoint: service.GrokMediaEndpointVideoStatus, want: ""},
+		{name: "video content preserves lookup", endpoint: service.GrokMediaEndpointVideoContent, want: ""},
 	}
 
 	for _, tt := range tests {
@@ -86,6 +93,25 @@ func TestGrokMediaRequiredCapability(t *testing.T) {
 			require.Equal(t, tt.want, grokMediaRequiredCapability(tt.endpoint))
 		})
 	}
+}
+
+func TestGrokMediaScheduleModelUsesNormalizedMappedUpstream(t *testing.T) {
+	account := &service.Account{
+		Platform: service.PlatformGrok,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"grok-imagine-video-1.5": "wrong-raw-model",
+				"grok-imagine-video":     "mapped-video-model",
+			},
+		},
+	}
+
+	require.Equal(t, "mapped-video-model", grokMediaScheduleModel(account, "grok-imagine-video", nil))
+	require.Equal(t, "actual-upstream-model", grokMediaScheduleModel(account, "grok-imagine-video", &service.OpenAIForwardResult{
+		UpstreamModel: "actual-upstream-model",
+	}))
+	require.Equal(t, "mapped-video-model", grokMediaScheduleModel(account, "grok-imagine-video", &service.OpenAIForwardResult{}))
+	require.Equal(t, "grok-imagine-video", grokMediaScheduleModel(nil, " grok-imagine-video ", nil))
 }
 
 func TestEnsureGrokMediaAccountEligibility(t *testing.T) {
