@@ -385,7 +385,7 @@ var defaultOpenAICodexSnapshotPersistThrottle = newAccountWriteThrottle(openAICo
 
 // ErrNoAvailableCompactAccounts indicates the request needs /responses/compact
 // support but no compatible account is available.
-var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts support /responses/compact")
+var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /responses/compact")
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
@@ -418,6 +418,7 @@ type OpenAIGatewayService struct {
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
+	openaiProxyStreamCircuitOnce  sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiModelTransientOnce      sync.Once
 	agentIdentityTaskMu           sync.Mutex
@@ -427,6 +428,7 @@ type OpenAIGatewayService struct {
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
 	openaiModelTransient          *openAIAccountModelTransientState
+	openaiProxyStreamCircuit      *openAIProxyStreamCircuit
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
