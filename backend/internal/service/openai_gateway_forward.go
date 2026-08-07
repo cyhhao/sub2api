@@ -1091,6 +1091,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}
+	applyCodexBetaFeatureHeaders(req.Header, body)
 
 	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。
 	// 用于网关未透传/改写 User-Agent 时，仍能命中 Codex 侧识别逻辑。
@@ -1113,6 +1114,59 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	account.ApplyHeaderOverrides(req.Header)
 
 	return req, nil
+}
+
+func applyCodexBetaFeatureHeaders(header http.Header, body []byte) {
+	if header == nil || !openAIRequestBodyContainsContextCompaction(body) {
+		return
+	}
+	appendHeaderToken(header, "X-Codex-Beta-Features", "remote_compaction_v2")
+	if strings.TrimSpace(header.Get("Version")) == "" {
+		header.Set("Version", codexCLIVersion)
+	}
+}
+
+func openAIRequestBodyContainsContextCompaction(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	found := false
+	var walk func(gjson.Result)
+	walk = func(value gjson.Result) {
+		if found {
+			return
+		}
+		if value.IsObject() && strings.TrimSpace(value.Get("type").String()) == "context_compaction" {
+			found = true
+			return
+		}
+		if value.IsArray() || value.IsObject() {
+			value.ForEach(func(_, child gjson.Result) bool {
+				walk(child)
+				return !found
+			})
+		}
+	}
+	walk(gjson.ParseBytes(body))
+	return found
+}
+
+func appendHeaderToken(header http.Header, name, token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	current := strings.TrimSpace(header.Get(name))
+	if current == "" {
+		header.Set(name, token)
+		return
+	}
+	for _, part := range strings.Split(current, ",") {
+		if strings.TrimSpace(part) == token {
+			return
+		}
+	}
+	header.Set(name, current+","+token)
 }
 
 // codexIdentityOverrideUA 返回账号级显式配置的出站 User-Agent，供强制统一身份时作为覆写来源。

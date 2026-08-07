@@ -2980,7 +2980,7 @@ func TestOpenAIBuildUpstreamRequestPreservesCodexBetaFeatures(t *testing.T) {
 	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
-	require.Equal(t, "0.999.0", req.Header.Get("Version"))
+	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
@@ -3044,7 +3044,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCodexBetaFeatures(t
 	require.Equal(t, "parent-123", req.Header.Get("X-Codex-Parent-Thread-Id"))
 	require.Equal(t, `{"turn_id":"turn-123"}`, req.Header.Get("X-Codex-Turn-Metadata"))
 	require.Equal(t, "window-123", req.Header.Get("X-Codex-Window-Id"))
-	require.Equal(t, "0.999.0", req.Header.Get("Version"))
+	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
 }
 
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughInfersCodexBetaFeaturesForContextCompaction(t *testing.T) {
