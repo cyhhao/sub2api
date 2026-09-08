@@ -358,12 +358,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("image generation disabled for group")
 	}
 
-	instructions := gjson.GetBytes(body, "instructions")
-	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
-	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
-		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
-	}
-
 	isCompactRequest := compactPath
 	requestedModel := reqModel
 	billingModel, upstreamModel := resolveOpenAIForwardMappedModels(account, requestedModel, isCompactRequest)
@@ -371,6 +365,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if compactModel := s.resolveOpenAICompactFallbackModel(account, requestedModel); compactModel != "" {
 			upstreamModel = compactModel
 		}
+	}
+	instructions := gjson.GetBytes(body, "instructions")
+	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
+	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
+		markPatchSet("instructions", defaultCodexSynthInstructions(upstreamModel))
 	}
 	if billingModel != requestedModel {
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", requestedModel, billingModel, account.Name, isCodexCLI)
@@ -610,6 +609,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				markPatchDelete(unsupportedField)
 			}
 		}
+	}
+	// Ollama Cloud（实际 Responses 上游为 ollama.com）输出上限 clamp：对 Codex 与
+	// 非 Codex 客户端一律执行（真实 Codex 客户端同样会带超限 max_output_tokens 被
+	// ollama.com 以 400 拒绝）。在 `!isCodexCLI` 归一化块之后独立调用：非 Codex 时
+	// 位于平台字段归一化之后，不跳过原有平台 switch（patch 按追加顺序应用，set 在
+	// 先前的 delete/set 之后生效）；Codex 请求不做归一化，直接按 body 现值判定。
+	if clampedCap, ok := ollamaCloudResponsesMaxOutputTokensClamp(account, upstreamModel, body); ok {
+		markPatchSet("max_output_tokens", clampedCap)
 	}
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 &&
 		!account.IsOpenAIApiKey() && gjson.GetBytes(body, "previous_response_id").Exists() {

@@ -866,7 +866,7 @@ export default {
         maxReasoningEffortOverLimitDeny: 'Deny access',
         maxReasoningEffortOverLimitHint: 'Applies after a ceiling is set. Downgrade rewrites values above the ceiling to the ceiling. Deny rejects the request.',
         reasoningEffortMappings: 'Reasoning effort mappings',
-        reasoningEffortMappingsHint: 'Type and model can both be left empty to match every model. One type and model can hold multiple request mappings, for example prefix gpt mapping both high and xhigh to medium. Exact matches beat affixes, and longer affixes beat shorter ones.',
+        reasoningEffortMappingsHint: 'Type and model can both be left empty to match every model. One type and model can hold multiple request mappings, for example prefix gpt mapping both high and xhigh to medium. Choose Deny as the forwarded value to reject that request value. Exact matches beat affixes, and longer affixes beat shorter ones.',
         addReasoningEffortMapping: 'Add mapping',
         addReasoningEffortPair: 'Add request value',
         removeReasoningEffortMapping: 'Remove mapping',
@@ -880,6 +880,7 @@ export default {
         reasoningEffortModelPlaceholder: 'Empty = all / gpt / gpt-5.4',
         reasoningEffortFrom: 'Request value',
         reasoningEffortTo: 'Forwarded value',
+        reasoningEffortToDeny: 'Deny',
         reasoningEffortFromPlaceholder: 'Select A',
         reasoningEffortToPlaceholder: 'Select B',
         fromRequired: 'Select request value A',
@@ -1070,14 +1071,23 @@ export default {
         bufferRangeError: 'Safety buffer must be between 0 and 99.99',
         sumTooHigh: 'Min gross margin plus safety buffer must be less than 100%, otherwise every account would be excluded'
       },
-      modelsList: {
-        title: 'Custom {endpoint} Model List',
-        hint: 'Only changes the {endpoint} response. Whitelist model calls and account routing are unchanged.',
-        loading: 'Loading model list...',
-        empty: 'No displayable models',
+      modelAllowlist: {
+        title: 'Model Allowlist',
+        hint: 'When enabled, models outside the allowlist are rejected with 404 model_not_found, and model listing endpoints only show allowlisted models. Entries support exact model IDs and trailing * wildcards. Note: Claude Code probes with haiku-family models for titles/summaries and /messages/count_tokens is also allowlist-controlled, so make sure the small models you need are selected too.',
+        loading: 'Loading candidate models...',
+        empty: 'No candidate models; add custom entries below',
         selectedSummary: 'Selected {selected} / {total}',
         selectAll: 'Select all',
-        invertSelection: 'Invert'
+        invertSelection: 'Invert',
+        wildcardTag: 'wildcard',
+        customPlaceholder: 'Custom entry, e.g. claude-* or gpt-5.5-codex',
+        addCustom: 'Add',
+        emptySelectionError: 'The model allowlist is enabled; select or add at least one model entry',
+        errors: {
+          empty: 'Please enter a model entry',
+          invalidWildcard: 'Wildcard * is only allowed at the end of an entry',
+          duplicate: 'This entry already exists'
+        }
       },
       codexModelsManifest: {
         title: 'Pinned Accounts for Model Lists',
