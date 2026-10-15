@@ -991,7 +991,9 @@ type GatewayConfig struct {
 	// GrokResponseHeaderTimeout bounds the pre-first-byte wait for xAI/Grok.
 	// A zero value uses the provider-safe default instead of the generic gateway timeout.
 	GrokResponseHeaderTimeout int `mapstructure:"grok_response_header_timeout"`
-	// OpenAIFirstOutputTimeoutSeconds: native HTTP Responses 首个语义输出超时（秒），0表示禁用。
+	// OpenAIFirstOutputTimeoutSeconds: native streaming Responses 首个语义输出超时（秒），0表示禁用。
+	// HTTP 包含响应头等待；HTTP POST stream:true 经 WS v2 转发时从主请求写出后开始计时。
+	// 非流式请求和客户端 WebSocket passthrough 不适用。
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
 	// 0 表示回退到 OpenAIFirstOutputTimeoutSeconds。

@@ -17,6 +17,43 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// openAIWSFirstSemanticOutputStarted is the WS bridge's commitment boundary,
+// not its TTFT classifier. Known empty payloads stay private; unknown shapes
+// commit conservatively so possible output cannot be replayed.
+func openAIWSFirstSemanticOutputStarted(data, eventType string) bool {
+	eventType = strings.TrimSpace(eventType)
+	switch eventType {
+	case "response.output_item.added", "response.content_part.added", "response.reasoning_summary_part.added":
+		return openAIStreamAddedEventStartsClientOutput([]byte(data), eventType)
+	case "response.output_item.done", "response.content_part.done", "response.reasoning_summary_part.done":
+		addedType := strings.TrimSuffix(eventType, ".done") + ".added"
+		return openAIStreamAddedEventStartsClientOutput([]byte(data), addedType)
+	case "response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta",
+		"response.function_call_arguments.delta", "response.custom_tool_call_input.delta", "response.refusal.delta",
+		"response.audio_transcript.delta", "response.output_audio_transcript.delta", "response.audio.transcript.delta":
+		return gjson.Get(data, "delta").String() != ""
+	case "response.audio.delta", "response.output_audio.delta":
+		// Compatible audio providers also use audio instead of delta.
+		return gjson.Get(data, "delta").String() != "" || gjson.Get(data, "audio").String() != ""
+	case "response.audio.transcript.done", "response.audio.done", "response.output_audio.done",
+		"response.audio_transcript.done", "response.output_audio_transcript.done":
+		// Responses dotted done events have no output field. Realtime and
+		// compatible aliases can carry a transcript or other real payload.
+		return gjson.Get(data, "transcript").String() != "" ||
+			gjson.Get(data, "text").String() != "" ||
+			gjson.Get(data, "audio").String() != "" || gjson.Get(data, "delta").String() != ""
+	case "response.output_text.done", "response.reasoning_text.done", "response.reasoning_summary_text.done",
+		"response.function_call_arguments.done", "response.custom_tool_call_input.done":
+		return openAIStreamDataStartsVisibleOutput(data, eventType)
+	case "response.refusal.done":
+		return gjson.Get(data, "refusal").String() != ""
+	case "response.image_generation_call.partial_image":
+		return gjson.Get(data, "partial_image_b64").String() != ""
+	default:
+		return openAIStreamDataStartsClientOutput(data, eventType)
+	}
+}
+
 func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	ctx context.Context,
 	c *gin.Context,
@@ -63,6 +100,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 
 	payload := s.buildOpenAIWSCreatePayload(reqBody, account)
+	reasoningEffort := extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel)
+	reasoningEffortValue := ""
+	if reasoningEffort != nil {
+		reasoningEffortValue = *reasoningEffort
+	}
+	firstOutputTimeout := time.Duration(0)
+	if reqStream {
+		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffortValue)
+	}
 	payloadStrategy, removedKeys := applyOpenAIWSRetryPayloadStrategy(payload, attempt)
 	turnState := ""
 	turnMetadata := ""
@@ -353,6 +399,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		)
 		return nil, wrapOpenAIWSFallback("write_request", err)
 	}
+	// Start the read window immediately after the main write succeeds. Acquire,
+	// dial, optional prewarm and write keep their own independent timeouts.
+	firstOutputReadStartedAt := time.Now()
+	firstOutputDeadline := firstOutputReadStartedAt.Add(firstOutputTimeout)
 	if debugEnabled {
 		logOpenAIWSModeDebug(
 			"write_request_sent account_id=%d conn_id=%s stream=%v payload_bytes=%d previous_response_id=%s",
@@ -375,6 +425,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if needModelReplace && mappedModel != "" {
 		mappedModelBytes = []byte(mappedModel)
 	}
+	// Stage preamble until the first semantic output, independently of TTFT.
+	// After commitment, all later frames must bypass this buffer.
 	bufferedStreamEvents := make([][]byte, 0, 4)
 	eventCount := 0
 	tokenEventCount := 0
@@ -387,6 +439,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	clientDisconnected := false
 	clientDisconnectDrainStartedAt := time.Time{}
 	readTimeout := s.openAIWSReadTimeout()
+	firstSemanticOutputObserved := false
 	upstreamReadCtx := ctx
 	upstreamReadDetached := false
 	clientRequestCanceled := func() bool {
@@ -529,6 +582,21 @@ readLoop:
 			pendingJSONDocuments = pendingJSONDocuments[1:]
 		} else {
 			currentReadTimeout := readTimeout
+			if !clientDisconnected && !firstSemanticOutputObserved && firstOutputTimeout > 0 && (ctx == nil || ctx.Err() == nil) {
+				remaining := time.Until(firstOutputDeadline)
+				if remaining <= 0 {
+					lease.MarkBroken()
+					wsProxyID, wsProxyName := opsUpstreamWSProxyAttribution(account)
+					return nil, s.newOpenAIFirstOutputTimeoutError(
+						ctx, c, account, wsProxyID, wsProxyName,
+						firstOutputReadStartedAt, originalModel, reasoningEffortValue,
+						firstOutputTimeout, "websocket_first_semantic_output_read", lease.HandshakeHeaders(),
+					)
+				}
+				if currentReadTimeout <= 0 || remaining < currentReadTimeout {
+					currentReadTimeout = remaining
+				}
+			}
 			if clientDisconnected && !clientDisconnectDrainStartedAt.IsZero() {
 				remaining := readTimeout - time.Since(clientDisconnectDrainStartedAt)
 				if remaining <= 0 {
@@ -576,6 +644,17 @@ readLoop:
 		}
 		if readErr != nil {
 			lease.MarkBroken()
+			firstOutputTimedOut := !clientDisconnected && !firstSemanticOutputObserved && firstOutputTimeout > 0 &&
+				(ctx == nil || ctx.Err() == nil) && time.Until(firstOutputDeadline) <= 0 &&
+				errors.Is(readErr, context.DeadlineExceeded)
+			if firstOutputTimedOut {
+				wsProxyID, wsProxyName := opsUpstreamWSProxyAttribution(account)
+				return nil, s.newOpenAIFirstOutputTimeoutError(
+					ctx, c, account, wsProxyID, wsProxyName,
+					firstOutputReadStartedAt, originalModel, reasoningEffortValue,
+					firstOutputTimeout, "websocket_first_semantic_output_read", lease.HandshakeHeaders(),
+				)
+			}
 			closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
 			logOpenAIWSModeInfo(
 				"read_fail account_id=%d conn_id=%s wrote_downstream=%v close_status=%s close_reason=%s cause=%s events=%d token_events=%d terminal_events=%d buffered_pending=%d buffered_flushed=%d first_event=%s last_event=%s",
@@ -610,7 +689,7 @@ readLoop:
 		}
 
 		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
-		if eventType == "" {
+		if eventType == "" && !reqStream {
 			continue
 		}
 		responseModelObserver.ObserveOpenAI(message, eventType)
@@ -629,6 +708,9 @@ readLoop:
 			tokenEventCount++
 		}
 		isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
+		if !isTerminalEvent && eventType != "error" && openAIWSFirstSemanticOutputStarted(string(message), eventType) {
+			firstSemanticOutputObserved = true
+		}
 		if isTerminalEvent {
 			terminalEventCount++
 		}
@@ -740,9 +822,9 @@ readLoop:
 		}
 
 		if reqStream {
-			// 在首个 token 前先缓冲事件（如 response.created），
-			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
-			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
+			// Only stage before the monotonic commitment boundary. Even metadata
+			// after output must be forwarded, including when the next read fails.
+			shouldBuffer := !firstSemanticOutputObserved && !isTerminalEvent
 			if shouldBuffer {
 				buffered := make([]byte, len(message))
 				copy(buffered, message)
